@@ -37,11 +37,13 @@ import {
 	useSelectionCapability,
 } from "@embedpdf/plugin-selection/react";
 import { TilingPluginPackage } from "@embedpdf/plugin-tiling/react";
-import { ViewportPluginPackage } from "@embedpdf/plugin-viewport/react";
+import {
+	useViewportCapability,
+	ViewportPluginPackage,
+} from "@embedpdf/plugin-viewport/react";
 import {
 	useZoom,
 	ZoomGestureWrapper,
-	ZoomMode,
 	ZoomPluginPackage,
 } from "@embedpdf/plugin-zoom/react";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -182,6 +184,21 @@ export const PdfViewer = memo(function PdfViewer(props: PdfViewerProps) {
 	}, [sourceBytes]);
 	const effectiveSourceBytes = pdfBuffer ?? sourceBytes;
 
+	// Bump the EmbedPDF key whenever `sourceBytes` changes by reference (a
+	// fresh read from disk, e.g. after a LaTeX recompile produces a new PDF
+	// and the tab is updated in place). EmbedPDF's DocumentManager only loads
+	// `initialDocuments` once at plugin init; a new buffer on the same docId
+	// would otherwise be silently ignored and the cached document stays on
+	// screen until something else forces a remount.
+	const [sourceBytesVersion, setSourceBytesVersion] = useState(0);
+	const lastSourceBytesRef = useRef<ArrayBuffer | null | undefined>(
+		sourceBytes,
+	);
+	if (lastSourceBytesRef.current !== sourceBytes) {
+		lastSourceBytesRef.current = sourceBytes;
+		setSourceBytesVersion((v) => v + 1);
+	}
+
 	const translationOnly = Boolean(props.translationOnly);
 	const plugins = useMemo(() => {
 		if (!source && !effectiveSourceBytes) return null;
@@ -214,7 +231,9 @@ export const PdfViewer = memo(function PdfViewer(props: PdfViewerProps) {
 				tileSize: 1024,
 			}),
 			createPluginRegistration(ZoomPluginPackage, {
-				defaultZoomLevel: ZoomMode.FitWidth,
+				// 1 = 100% zoom, centered at top. Use a number so the page opens
+				// at actual 100% scale rather than fit-to-width.
+				defaultZoomLevel: 1,
 				minZoom: PDF_ZOOM_MIN,
 				maxZoom: PDF_ZOOM_MAX,
 			}),
@@ -291,7 +310,7 @@ export const PdfViewer = memo(function PdfViewer(props: PdfViewerProps) {
 	return (
 		<div id="agentero-pdf-host" className={hostClass}>
 			<EmbedPDF
-				key={`${docId}::${source ?? "buffer"}`}
+				key={`${docId}::${source ?? "buffer"}::v${sourceBytesVersion}`}
 				engine={engine}
 				plugins={plugins}
 			>
@@ -370,6 +389,7 @@ function PdfViewerInner({
 
 	const { engine } = usePdfEngineContext();
 	const { provides: zoom, state: zoomState } = useZoom(docId);
+	const { provides: viewportCapability } = useViewportCapability();
 	const { provides: scroll, state: scrollState } = useScroll(docId);
 	usePdfScrollSync(docId);
 	const { provides: selectionCap } = useSelectionCapability();
@@ -380,6 +400,41 @@ function PdfViewerInner({
 	const { provides: bookmarkCap } = useBookmarkCapability();
 	const { provides: layoutCap } = useLayoutAnalysisCapability();
 	const { provides: layoutAnalysisProvides } = useLayoutAnalysis(docId);
+
+	// EmbedPDF's ZoomPlugin.recalcAuto only dispatches the initial setScale when
+	// `defaultZoomLevel` is a `ZoomMode` (Automatic / FitPage / FitWidth). For
+	// numeric defaults like `1` (100%), `recalcAuto` is a no-op on document load
+	// and on viewport resize, so the scroller never re-lays out at the requested
+	// scale and the page renders black until something else nudges the zoom
+	// (e.g. moving the slider triggers `requestZoom`, which finally dispatches
+	// `setScale` and lets `ScrollPlugin.onScaleChanged` re-layout). Force the
+	// zoom pipeline once the viewport is measured so the initial 100% scale
+	// actually reaches the scroller; vy: 0 anchors the page top to the viewport
+	// top. Horizontal centering for pages narrower than the content width is
+	// already handled by EmbedPDF's Vertical scroll strategy.
+	const initialZoomAppliedRef = useRef(false);
+	useEffect(() => {
+		if (!zoom || !viewportCapability) return;
+		if (initialZoomAppliedRef.current) return;
+		const viewportScope = viewportCapability.forDocument(docId);
+		const apply = (metrics: { clientWidth: number; clientHeight: number }) => {
+			if (initialZoomAppliedRef.current) return;
+			if (metrics.clientWidth <= 0 || metrics.clientHeight <= 0) return;
+			initialZoomAppliedRef.current = true;
+			zoom.requestZoom(1, { vx: 0, vy: 0 });
+		};
+		// Apply immediately if the viewport is already measured; otherwise wait
+		// for the first viewport change (which the plugin emits after layout
+		// settles) so the early-return on zero metrics in `handleRequest` does
+		// not silently swallow our request.
+		apply(viewportScope.getMetrics());
+		if (initialZoomAppliedRef.current) return;
+		const unsubscribe = viewportCapability.onViewportChange((event) => {
+			if (event.documentId !== docId) return;
+			apply(event.metrics);
+		});
+		return unsubscribe;
+	}, [zoom, viewportCapability, docId]);
 
 	// EmbedPDF's useScroll calls forDocument() every render and returns a fresh
 	// scope object (createScrollScope). Never put `scroll` in useEffect deps —

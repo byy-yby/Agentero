@@ -1737,7 +1737,9 @@ export type LatexEngine = {
 /**  Result of a TeX compilation. */
 export type CompileResult = {
 	ok: boolean,
-	pdf_path: string | null,
+	pdfPath: string | null,
+	/** True when the LaTeX engine exited non-zero. The PDF (if any) is still useful. */
+	engineError: boolean,
 	log: string,
 };
 

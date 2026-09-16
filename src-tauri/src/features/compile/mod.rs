@@ -95,8 +95,16 @@ pub async fn detect_latex_engines() -> ApiResult<Vec<LatexEngine>> {
 #[derive(Debug, Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub struct CompileResult {
+    /// True iff a PDF was produced on disk. LaTeX engines often emit a partial
+    /// PDF even when they report errors (undefined refs, missing files, …), so
+    /// the caller should treat this as "open the PDF" rather than "success".
     pub ok: bool,
+    /// Path to the produced PDF when one exists, even if the engine reported
+    /// errors. `None` only when the engine could not produce a PDF at all.
     pub pdf_path: Option<String>,
+    /// True when the LaTeX engine exited with a non-zero status. The PDF (if
+    /// any) is still useful — the caller may surface this as a soft warning.
+    pub engine_error: bool,
     pub log: String,
 }
 
@@ -133,12 +141,51 @@ pub async fn compile_tex(
         }
     };
 
+    let pdf_basename = tex_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+    let pdf_path = cwd.join(format!("{}.pdf", pdf_basename));
+
     log::info!(
         "compiling tex: {} with engine {} in {}",
         basename,
         engine,
         cwd.display()
     );
+
+    // Force a clean rebuild by removing any pre-existing PDF (and a few
+    // LaTeX intermediates whose stale state can suppress a re-run). The TeX
+    // engines refuse to compile when the existing PDF is newer than the
+    // `.tex` source, which silently returns the first compile's output on
+    // every subsequent Compile click — the opposite of what the button
+    // promises. Removing the PDF guarantees a fresh run.
+    for ext in [
+        "pdf",
+        "aux",
+        "log",
+        "out",
+        "toc",
+        "fls",
+        "synctex.gz",
+        "bbl",
+    ] {
+        let candidate = cwd.join(format!("{}.{}", pdf_basename, ext));
+        if candidate.exists() {
+            if let Err(e) = std::fs::remove_file(&candidate) {
+                log::warn!("failed to remove stale {}: {}", candidate.display(), e);
+            }
+        }
+    }
+
+    // Belt and suspenders: bump the .tex mtime so engines that compare
+    // timestamps (e.g. some latexmk modes) re-run even if they ignored our
+    // PDF deletion (e.g. permission failure).
+    let now = std::time::SystemTime::now();
+    let _ = std::fs::File::options()
+        .write(true)
+        .open(tex_path)
+        .and_then(|f| f.set_modified(now));
 
     let mut cmd = tokio::process::Command::new(&engine);
     cmd.current_dir(cwd);
@@ -176,29 +223,42 @@ pub async fn compile_tex(
         let _ = app_handle.emit("compile:log", serde_json::json!({ "line": line }));
     }
 
-    let pdf_basename = tex_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let pdf_path = cwd.join(format!("{}.pdf", pdf_basename));
+    // Whether the LaTeX engine itself succeeded (exit 0). The PDF can still
+    // exist when the engine reports errors, so callers should treat
+    // `pdf_path.exists()` as the source of truth for "do I have a PDF to show".
+    let engine_error = !output.status.success();
+    let pdf_exists = pdf_path.exists();
 
-    let ok = output.status.success() && pdf_path.exists();
+    log::info!(
+        "compile result: tex={} cwd={} pdf_path={} pdf_exists={} engine_error={} exit={:?}",
+        tex_path.display(),
+        cwd.display(),
+        pdf_path.display(),
+        pdf_exists,
+        engine_error,
+        output.status
+    );
+    let ok = pdf_exists;
 
-    if !ok {
+    if engine_error {
         log::warn!(
-            "compile failed for {}: exit={:?}",
+            "compile reported errors for {}: exit={:?} (pdf_exists={})",
             tex_path.display(),
-            output.status
+            output.status,
+            pdf_exists
         );
     }
 
     ApiResult::ok(CompileResult {
         ok,
-        pdf_path: if ok {
+        // Always surface the PDF path when one exists, even on engine error —
+        // a partial PDF is still useful for the user to inspect.
+        pdf_path: if pdf_exists {
             Some(pdf_path.to_string_lossy().to_string())
         } else {
             None
         },
+        engine_error,
         log: combined_log,
     })
 }

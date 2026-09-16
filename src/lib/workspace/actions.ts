@@ -765,6 +765,31 @@ export function openPaperNotes(paperDir: string): void {
 	openTab(abs, { preferMode: "pdf", forceNotes: true });
 }
 
+/**
+ * Open the PDF produced by compiling a .tex file next to the .tex source,
+ * mirroring the paper PDF + NOTES reading layout (source on the left, PDF on
+ * the right). If the .tex source is not currently open, fall back to a
+ * standard PDF open (center pane).
+ *
+ * If the PDF tab already exists (e.g. from a previous compile of the same .tex),
+ * close it first so EmbedPDF gets a fresh document mount with the new bytes —
+ * EmbedPDF caches documents by id and does not reload when bytes change.
+ */
+export function openTexPdfBesideSource(texPath: string, pdfPath: string): void {
+	const pdfTabId = tabIdForPath(pdfPath);
+	const existing = getTabs().find((t) => t.id === pdfTabId);
+	if (existing) {
+		// Drop the stale EmbedPDF mount so the reopen below creates a fresh one.
+		closeTab(pdfTabId, { remember: false });
+	}
+	const texTabId = tabIdForPath(texPath);
+	const texTabOpen = getTabs().some((t) => t.id === texTabId);
+	const placement: OpenPlacement = texTabOpen
+		? { direction: "right", referencePanelId: texTabId }
+		: null;
+	openTab(pdfPath, { preferMode: "pdf", placement });
+}
+
 /** Open a paper folder in a tab: center PDF, right Notes (resolved on load).
  *  Also selects/reveals the paper in the left file tree. */
 export function openPaper(paperDir: string): void {

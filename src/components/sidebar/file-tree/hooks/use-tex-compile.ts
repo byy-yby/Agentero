@@ -5,10 +5,13 @@
 
 import { listen } from "@tauri-apps/api/event";
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+	flushTextEditor,
+	getTextEditorPending,
+} from "@/components/viewer/text-editor-pending";
 import { commands } from "@/lib/core/bindings";
 import { notifyError, notifySuccess } from "@/lib/core/notify";
-import { openTab } from "@/lib/workspace/actions";
-import type { CenterViewMode } from "@/lib/workspace/viewer";
+import { openTexPdfBesideSource } from "@/lib/workspace/actions";
 
 export type LatexEngine = {
 	id: string;
@@ -82,21 +85,42 @@ export function useTexCompile(): TexCompileActions {
 			setCompilingPath(texPath);
 
 			try {
+				// Flush any pending edits in the open CodeMirror .tex editor before
+				// reading the file from disk. The editor's own autosave debounces
+				// by ~800ms, so a click within that window would otherwise compile
+				// the previous on-disk version and the PDF would not reflect the
+				// current edits. We delegate to the editor's own flush handler so
+				// `lastSavedRef` and the disk-conflict guard stay consistent — a
+				// bypass would leave the baseline stale and trip a false conflict
+				// on the next autosave.
+				if (getTextEditorPending(texPath) !== null) {
+					const flushed = await flushTextEditor(texPath);
+					if (!flushed) {
+						notifyError("保存 .tex 文件失败，未编译");
+						return;
+					}
+				}
+
 				const res = await commands.compileTex(texPath, engine);
 
-				if (!res.ok) {
+				// ApiResult wraps errors as .error (not .ok === false).
+				if (res.error) {
 					notifyError(res.error?.message ?? "编译失败");
 					return;
 				}
 
 				const result = res.data;
-				if (result && result.ok && result.pdf_path) {
-					notifySuccess("编译成功");
-					openTab(result.pdf_path, {
-						preferMode: "pdf" as CenterViewMode,
-					});
+				if (result?.pdfPath) {
+					// Always open the PDF when one was produced — LaTeX engines
+					// frequently emit a partial PDF even on engine errors.
+					openTexPdfBesideSource(texPath, result.pdfPath);
+					if (result.engineError) {
+						notifyError("编译有警告，已生成 PDF，请查看日志");
+					} else {
+						notifySuccess("编译成功");
+					}
 				} else {
-					notifyError("编译失败，请检查日志");
+					notifyError("编译失败，未生成 PDF");
 				}
 			} catch (e) {
 				notifyError(String(e));

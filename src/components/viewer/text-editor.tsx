@@ -5,6 +5,12 @@ import { basicSetup } from "codemirror";
 import { useTheme } from "next-themes";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import { textLanguageExtensions } from "@/components/viewer/text-editor-language";
+import {
+	clearTextEditorFlushHandler,
+	clearTextEditorPending,
+	setTextEditorFlushHandler,
+	setTextEditorPending,
+} from "@/components/viewer/text-editor-pending";
 
 interface TextEditorProps {
 	seed: string;
@@ -98,6 +104,7 @@ export function TextEditor({
 		const content = pendingContentRef.current;
 		if (content == null) return;
 		pendingContentRef.current = null;
+		clearTextEditorPending(path);
 		const ok = await onPersist(path, content, lastSavedRef.current);
 		if (ok) {
 			lastSavedRef.current = content;
@@ -109,13 +116,14 @@ export function TextEditor({
 	const schedulePersist = useCallback(
 		(content: string) => {
 			pendingContentRef.current = content;
+			setTextEditorPending(path, content);
 			if (debounceRef.current) clearTimeout(debounceRef.current);
 			debounceRef.current = setTimeout(() => {
 				debounceRef.current = null;
 				void flush();
 			}, AUTOSAVE_DELAY_MS);
 		},
-		[flush],
+		[flush, path],
 	);
 
 	// The update listener is registered once at mount; route it through a ref
@@ -188,8 +196,27 @@ export function TextEditor({
 			if (pendingContentRef.current) {
 				void flush();
 			}
+			clearTextEditorPending(path);
+			clearTextEditorFlushHandler(path);
 		};
-	}, [flush]);
+	}, [flush, path]);
+
+	// Publish a synchronous-equivalent flush hook so callers outside the editor
+	// (e.g. the LaTeX compile button) can drain pending edits before reading
+	// from disk. Going through the editor's own `flush` keeps `lastSavedRef`
+	// and the disk-conflict guard consistent — a bypass would leave the
+	// baseline stale and trip a false conflict on the next autosave.
+	useEffect(() => {
+		const handler = async () => {
+			if (debounceRef.current) {
+				clearTimeout(debounceRef.current);
+				debounceRef.current = null;
+			}
+			await flush();
+		};
+		setTextEditorFlushHandler(path, handler);
+		return () => clearTextEditorFlushHandler(path);
+	}, [flush, path]);
 
 	// A `reloadKey` bump means the file was reloaded from disk (external
 	// change the user accepted). Drop any pending autosave from the superseded
@@ -202,6 +229,7 @@ export function TextEditor({
 			debounceRef.current = null;
 		}
 		pendingContentRef.current = null;
+		clearTextEditorPending(path);
 		const view = viewRef.current;
 		const next = seedRef.current;
 		lastSavedRef.current = next;
@@ -212,7 +240,7 @@ export function TextEditor({
 		}
 		dirtyRef.current = false;
 		onDirtyChangeRef.current(false);
-	}, [reloadKey]);
+	}, [reloadKey, path]);
 
 	// An unreadable file still opens an empty buffer — the next autosave
 	// creates/repairs the file on disk.
