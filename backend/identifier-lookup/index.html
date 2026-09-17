@@ -5159,7 +5159,7 @@
 <ul>
 <li><strong>显示条件</strong>：缺 PDF <strong>或</strong>（既无 TeX 也无 <code>PAPER.md</code>）。可读正文 <strong>TeX 与 PAPER.md 二选一即可，优先 TeX</strong>（有 TeX 不强制 PAPER.md）。<strong>不再</strong>因缺少空 <code>source/</code> 单独显示 Download。hover 说明原因。</li>
 <li><strong>点击</strong>：<code>paper_download_assets</code> → PDF 到论文根目录 → arXiv 尽量 TeX 到 <code>source/</code> → 无 TeX 则 liteparse <code>PAPER.md</code>。</li>
-<li><strong>Library 行</strong>：库内任一篇不完整时批量同一逻辑。</li>
+<li><strong>论文库节点</strong>（<code>papers/</code> 根文件夹右键）：库内任一篇不完整时批量同一逻辑。</li>
 </ul>
 <p><strong>精读（Zap 图标 + 自动触发）</strong>：</p>
 <ul>
@@ -5185,7 +5185,7 @@
 </tr>
 <tr>
 <td>默认</td>
-<td><strong><code>https://translator.philfan.cn</code></strong></td>
+<td><strong><code>https://translation-server.agentero.app</code></strong></td>
 </tr>
 <tr>
 <td>Host 常量</td>
@@ -6102,7 +6102,7 @@ catalog <strong>schema v2</strong> 起补齐期刊/卷期页等字段（见 <a h
 </ul>
 <h3 id="phase-b-translator">Phase B — Translator 服务<a class="headerlink" href="#phase-b-translator" title="Permanent link">&para;</a></h3>
 <ul>
-<li>[x] HTTP 客户端 → <code>POST {translatorBaseUrl}/search|/web</code>（默认 <code>https://translator.philfan.cn</code>）</li>
+<li>[x] HTTP 客户端 → <code>POST {translatorBaseUrl}/search|/web</code>（默认 <code>https://translation-server.agentero.app</code>）</li>
 <li>[x] map → <code>PaperRecord</code> / catalog schema v2；设置页 <code>translatorBaseUrl</code></li>
 <li>[ ] 可选本机 sidecar 捆绑 / 探测；更细 dedupe UX</li>
 </ul>
