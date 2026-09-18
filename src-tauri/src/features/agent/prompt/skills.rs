@@ -39,6 +39,7 @@ pub fn skill_mention_style(template: &AgentTemplate) -> SkillMentionStyle {
         | AgentTemplate::GrokBuild
         | AgentTemplate::Dsh
         | AgentTemplate::KimiCode
+        | AgentTemplate::Zcode
         | AgentTemplate::Custom => SkillMentionStyle::Slash,
     }
 }
@@ -241,7 +242,8 @@ mod tests {
             include_str!("../../../../../templates/vault/.agents/skills/paper-reader/SKILL.md");
         let (name, description) = parse_skill_metadata(bundled, "paper-reader");
         assert_eq!(name, "paper-reader");
-        assert!(description.starts_with("Read and explain a research paper"));
+        assert!(description.starts_with("用中文清晰阅读和讲解科研论文"));
+        assert!(description.contains("NOTES.md"));
     }
 
     #[test]

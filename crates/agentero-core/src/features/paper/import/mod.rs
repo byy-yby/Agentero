@@ -64,7 +64,7 @@ use tokio::sync::Mutex;
 
 /// Default Translator Runtime base URL (hosted service).
 /// Override via Settings → `translatorBaseUrl` / `LookupImportArgs.translator_base_url`.
-pub const DEFAULT_TRANSLATOR_BASE_URL: &str = "https://translator.philfan.cn";
+pub const DEFAULT_TRANSLATOR_BASE_URL: &str = "https://translation-server.agentero.app";
 
 pub fn check_task_not_cancelled(task_id: Option<&str>) -> Result<(), AppError> {
     if task_id.is_some_and(is_task_cancelled) {
@@ -814,6 +814,21 @@ async fn import_one_local_pdf(
     })
 }
 
+/// Strip a trailing `.pdf` / `.PDF` extension (case-sensitive pair) from a
+/// filename-derived title or heading, so placeholders like `paper.pdf` compare
+/// equal to `paper`.
+pub fn strip_pdf_ext(s: &str) -> &str {
+    let trimmed = s.trim();
+    if let Some(rest) = trimmed
+        .strip_suffix(".pdf")
+        .or_else(|| trimmed.strip_suffix(".PDF"))
+    {
+        rest.trim()
+    } else {
+        trimmed
+    }
+}
+
 /// Folder-safe slug from a filename stem (alphanumerics + dots; other runs → `-`).
 pub fn slug_from_stem(stem: &str) -> String {
     let mut s = String::new();
@@ -1213,7 +1228,7 @@ fn render_note_template(template: &str, meta: &PaperRecord) -> String {
 
 /// Aliases guarantee for a rendered (Custom) shell: when the frontmatter has
 /// no aliases, merge in the title + short alias following the same logic as
-/// `wiki::append_title_alias_best_effort`.
+/// `wiki::notes::merge_aliases`.
 fn ensure_note_aliases(notes: &str, aliases: &[String]) -> String {
     use crate::features::wiki::frontmatter::{self as fm, AliasEdit};
     let inspection = fm::inspect_aliases(notes);

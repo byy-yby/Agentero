@@ -29,6 +29,11 @@ pub enum AgentTemplate {
     /// Moonshot Kimi Code CLI with native ACP (`kimi acp`).
     /// Docs: https://moonshotai.github.io/kimi-code/en/
     KimiCode,
+    /// ZCode CLI via the community `zcode-acp-server` adapter, which bridges the
+    /// headless `zcode app-server --stdio`. Reuses the ZCode desktop app login
+    /// (`~/.zcode`); the adapter auto-discovers the app-bundled CLI.
+    /// Docs: https://github.com/william0wang/zcode-acp
+    Zcode,
     Custom,
 }
 
@@ -49,6 +54,7 @@ impl<'de> serde::Deserialize<'de> for AgentTemplate {
             "pi" => Self::Pi,
             "dsh" => Self::Dsh,
             "kimi-code" => Self::KimiCode,
+            "zcode" => Self::Zcode,
             "custom" => Self::Custom,
             other => {
                 return Err(serde::de::Error::custom(format!(
@@ -72,20 +78,9 @@ impl AgentTemplate {
             Self::Pi => "pi",
             Self::Dsh => "dsh",
             Self::KimiCode => "kimi-code",
+            Self::Zcode => "zcode",
             Self::Custom => "custom",
         }
-    }
-
-    /// Templates that launch through a community ACP adapter (rather than a
-    /// native ACP mode) may ignore the `NewSessionRequest` cwd and fall back to
-    /// the process cwd. For these agents we wrap the local spawn in a shell
-    /// `cd` so the OS-level working directory matches the vault.
-    ///
-    /// Custom agents are also wrapped: users commonly specify a relative script
-    /// path in `args`, and the shell `cd` guarantees it resolves against the
-    /// configured working directory instead of an unspecified process cwd.
-    pub fn needs_local_cwd_shell_wrap(&self) -> bool {
-        matches!(self, Self::Pi | Self::Custom)
     }
 }
 

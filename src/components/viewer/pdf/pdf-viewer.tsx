@@ -126,10 +126,12 @@ import {
 	annotationWikilinkMarkdown,
 	wikiTargetForPaper,
 } from "@/lib/pdf/annotation-ref";
+import { embedPdfDocumentId } from "@/lib/pdf/document-id";
 import { HIGHLIGHT_HEX_LIST } from "@/lib/pdf/highlight/palette";
 import {
 	getPdfAiRuntime,
 	layoutAnalysisStore,
+	layoutDocumentKey,
 	type PdfLayoutRegion,
 	setFocusedLayoutRegion,
 } from "@/lib/pdf/layout";
@@ -162,12 +164,17 @@ export const PdfViewer = memo(function PdfViewer(props: PdfViewerProps) {
 
 	const source = isPdfViewerSource(props.source) ? props.source.trim() : null;
 	const sourceBytes = props.sourceBytes ?? null;
-	const docId =
+	const baseDocId =
 		props.docId?.trim() ||
 		props.paperRelPath ||
 		props.paperAbsPath ||
 		source ||
 		"pdf";
+	// Local buffers get a per-read revision id: the app-wide PDFium engine
+	// caches documents by `documentId`, so a reloaded buffer (TeX recompile /
+	// external overwrite) must register under a fresh id or the engine re-uses
+	// the stale document and drops the new bytes. See `embedPdfDocumentId`.
+	const docId = embedPdfDocumentId(baseDocId, sourceBytes);
 
 	// Make a private copy of the PDF bytes for this EmbedPDF mount. The worker
 	// engine may structured-clone/transfer the buffer; sharing the same
@@ -340,12 +347,14 @@ export const PdfViewer = memo(function PdfViewer(props: PdfViewerProps) {
 							<PdfTranslationViewerInner
 								{...props}
 								docId={docId}
+								baseDocId={baseDocId}
 								sourceBytes={effectiveSourceBytes}
 							/>
 						) : (
 							<PdfViewerInner
 								{...props}
 								docId={docId}
+								baseDocId={baseDocId}
 								sourceBytes={effectiveSourceBytes}
 							/>
 						);
@@ -358,6 +367,7 @@ export const PdfViewer = memo(function PdfViewer(props: PdfViewerProps) {
 
 function PdfViewerInner({
 	docId,
+	baseDocId,
 	sourceBytes = null,
 	paperAbsPath = null,
 	paperRelPath = null,
@@ -365,6 +375,7 @@ function PdfViewerInner({
 	paperMeta: paperMetaProp = null,
 	isActive = true,
 	isRemotePaper = false,
+	plainViewer = false,
 	translationPane = false,
 	translationOnly = false,
 	importIdentifier,
@@ -465,7 +476,8 @@ function PdfViewerInner({
 		const focused = s.focused;
 		if (!focused) return null;
 		if (focused.region) return focused.region;
-		const result = s.byDocument[docId];
+		// byDocument is keyed by the revision-stripped base id.
+		const result = s.byDocument[layoutDocumentKey(docId)];
 		if (!result) return null;
 		return (
 			result.regions.find((r) => r.id === focused.regionId) ??
@@ -969,22 +981,27 @@ function PdfViewerInner({
 		scrollRef,
 		hostRef,
 		isRemotePaper,
+		plainViewer,
 	});
 
 	const handleToggleLayoutTranslateWithDualPane = useCallback(() => {
+		if (plainViewer) return;
 		if (!dualPaneTranslate) {
 			toggleLayoutTranslate();
 			return;
 		}
 		// In dual-pane mode the source pane only opens the right-hand
 		// translation panel. The translation pane itself owns the single
-		// layout-translation job so only one task runs at a time.
-		onOpenTranslationTab?.(docId, paperAbsPath ?? null, paperTitle ?? null);
+		// layout-translation job so only one task runs at a time. The receiver
+		// resolves this back to a workspace tab, so pass the revision-stripped
+		// base id (`docId` carries a `::r<n>` buffer suffix).
+		onOpenTranslationTab?.(baseDocId, paperAbsPath ?? null, paperTitle ?? null);
 	}, [
+		plainViewer,
 		dualPaneTranslate,
 		toggleLayoutTranslate,
 		onOpenTranslationTab,
-		docId,
+		baseDocId,
 		paperAbsPath,
 		paperTitle,
 	]);
@@ -1183,6 +1200,7 @@ function PdfViewerInner({
 		setSelectionMenu,
 		onVisualDraft: handleVisualDraft,
 		screenPointForRegion,
+		plainViewer,
 	});
 
 	// ---- Selection action menu ----
@@ -1214,14 +1232,14 @@ function PdfViewerInner({
 	// available while the result card streams beside it.
 	useEffect(() => {
 		const quote = selectionMenu?.anchor.quote?.trim();
-		if (!selectionMenu || !autoTranslateSelection || !quote) {
+		if (!selectionMenu || plainViewer || !autoTranslateSelection || !quote) {
 			autoTranslatedSelectionRef.current = null;
 			return;
 		}
 		if (autoTranslatedSelectionRef.current === selectionMenu) return;
 		autoTranslatedSelectionRef.current = selectionMenu;
 		translateSelection(selectionMenu.anchor);
-	}, [autoTranslateSelection, selectionMenu, translateSelection]);
+	}, [autoTranslateSelection, plainViewer, selectionMenu, translateSelection]);
 
 	// Sticky right-rail annotate chip. Hover focuses the field and EmbedPDF may
 	// clear the live selection; keep the snapped draft after the chip has been
@@ -1231,7 +1249,7 @@ function PdfViewerInner({
 	const selectionCommentInteractedRef = useRef(false);
 
 	useEffect(() => {
-		if (isRemotePaper) {
+		if (isRemotePaper || plainViewer) {
 			selectionCommentInteractedRef.current = false;
 			setSelectionCommentDraft(null);
 			return;
@@ -1249,7 +1267,7 @@ function PdfViewerInner({
 		if (!selectionCommentInteractedRef.current) {
 			setSelectionCommentDraft(null);
 		}
-	}, [isRemotePaper, selectionMenu]);
+	}, [isRemotePaper, plainViewer, selectionMenu]);
 
 	const handleSelectionCommentActiveChange = useCallback((active: boolean) => {
 		if (active) selectionCommentInteractedRef.current = true;
@@ -1417,8 +1435,9 @@ function PdfViewerInner({
 			visualCropPending,
 			visualDraftOpen: false,
 			translationOnly,
+			plainViewer,
 		}),
-		[regionSelecting, visualCropPending, translationOnly],
+		[regionSelecting, visualCropPending, translationOnly, plainViewer],
 	);
 
 	const handleLayoutRegionClick = useCallback(
@@ -1536,6 +1555,7 @@ function PdfViewerInner({
 			height: number;
 		}) => (
 			<PdfPageLayers
+				annotationSource={paperRelPath ?? paperAbsPath ?? undefined}
 				docId={docId}
 				pageIndex={pageIndex}
 				width={width}
@@ -1552,6 +1572,8 @@ function PdfViewerInner({
 		),
 		[
 			docId,
+			paperRelPath,
+			paperAbsPath,
 			pdfTone,
 			zoomRef,
 			annotationCap,
@@ -1588,6 +1610,7 @@ function PdfViewerInner({
 					onToggleFigures={handleToggleFigures}
 					visible={leftChromeVisible}
 					isRemotePaper={isRemotePaper}
+					plainViewer={plainViewer}
 				/>
 			)}
 			{!translationOnly && jumpBackTarget && (
@@ -1607,7 +1630,7 @@ function PdfViewerInner({
 					showReferences={showReferences}
 				/>
 			)}
-			{!translationOnly && (
+			{!translationOnly && !plainViewer && (
 				<PdfFiguresPanel
 					documentId={docId}
 					paperAbsPath={paperAbsPath}
@@ -1631,7 +1654,7 @@ function PdfViewerInner({
 					onClose={closeFind}
 				/>
 			)}
-			{!translationOnly && (
+			{!translationOnly && !plainViewer && (
 				<PdfToolbar
 					regionSelecting={regionSelecting}
 					visualCropPending={visualCropPending}
@@ -1651,7 +1674,7 @@ function PdfViewerInner({
 			<DockviewViewport
 				documentId={docId}
 				hostRef={hostRef}
-				rightGutter={translationOnly ? 0 : COMMENT_RAIL_WIDTH_PX}
+				rightGutter={translationOnly || plainViewer ? 0 : COMMENT_RAIL_WIDTH_PX}
 				className="agentero-scroll-both min-h-0 min-w-0 flex-1"
 			>
 				<WheelZoomHandler docId={docId} />
@@ -1680,13 +1703,13 @@ function PdfViewerInner({
 				<PdfCardStack
 					hidden={privacyHidden}
 					selectionMenu={{
-						state: selectionMenu,
+						state: plainViewer ? null : selectionMenu,
 						onHighlight: handleHighlight,
 						onAsk: handleMenuAsk,
 						onAddToChat: handleMenuAddToChat,
 						onTranslate: handleMenuTranslate,
-						showHighlight: !isRemotePaper,
-						showTranslate: !isRemotePaper,
+						showHighlight: !isRemotePaper && !plainViewer,
+						showTranslate: !isRemotePaper && !plainViewer,
 					}}
 					copiedLabelPos={copiedLabelPos}
 					citationPreview={{

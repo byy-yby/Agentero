@@ -7,7 +7,7 @@
 
 use crate::core::error::AppError;
 use crate::core::log_util::{trunc, OpTimer};
-use crate::features::agent::acp::client::simplified_agent_cwd;
+use crate::features::agent::acp::client::agent_spawn_cwd;
 use crate::features::agent::models::{
     AcpListSessionsResult, AcpLoadSessionResult, AgentListResponse, AgentOnly, AgentRegistryState,
     AgentStatusEvent, AskUserResponseRequest, CatalogScanResponse, ElicitationResponseRequest,
@@ -22,7 +22,6 @@ use crate::features::agent::{
     AgentRegistry, AgentRunController, AgentWarmGate, AgentWarmPool, PermissionPolicy,
     RunOnceParams,
 };
-use std::path::PathBuf;
 use std::sync::Arc;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -49,22 +48,6 @@ pub fn list_agents(registry: &AgentRegistry) -> Result<AgentListResponse, AppErr
 /// Service for `agent_scan_catalog`.
 pub fn scan_catalog(registry: &AgentRegistry) -> Result<CatalogScanResponse, AppError> {
     registry.scan_catalog()
-}
-
-/// PATH scan plus async-safe version enrichment for Settings Upgrade buttons.
-///
-/// Runs `--version` / `npm view` off the async runtime via the caller’s
-/// `spawn_blocking`. Does not belong inside plain `scan_catalog` (Doctor and
-/// the chat switcher must stay network-free).
-pub fn check_catalog_updates(registry: &AgentRegistry) -> Result<CatalogScanResponse, AppError> {
-    let mut scan = registry.scan_catalog()?;
-    let (proxy_enabled, proxy_url) = registry.proxy_settings().unwrap_or_default();
-    crate::features::agent::registry::version_check::enrich_catalog_updates(
-        &mut scan,
-        proxy_enabled,
-        &proxy_url,
-    );
-    Ok(scan)
 }
 
 /// Service for `agent_ensure_catalog`.
@@ -320,7 +303,13 @@ pub async fn list_sessions(
             return Err(e);
         }
     };
-    let cwd = agent_cwd_or_local(remote_target.as_deref(), vault_path.as_deref());
+    let cwd = match agent_spawn_cwd(remote_target.as_deref(), vault_path.as_deref()) {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            op.finish_err(&error);
+            return Err(error);
+        }
+    };
     match list_acp_sessions(&desc, cwd, cursor, remote_target.as_deref()).await {
         Ok(result) => {
             warm_gate.clear(&desc.id);
@@ -352,23 +341,6 @@ pub async fn load_session(
 ) -> Result<AcpLoadSessionResult, AppError> {
     let desc = registry.resolve_default(agent_id.as_deref())?;
     let remote_target = remote_hosts.resolve_target(vault_path.as_deref()).await?;
-    let cwd = agent_cwd_or_local(remote_target.as_deref(), vault_path.as_deref());
+    let cwd = agent_spawn_cwd(remote_target.as_deref(), vault_path.as_deref())?;
     load_acp_session(&desc, session_id, cwd, remote_target.as_deref()).await
-}
-
-/// Remote sessions advertise their remote cwd; local vaults use the vault
-/// directory when it exists (fallback: current dir).
-fn agent_cwd_or_local(
-    remote: Option<&dyn crate::features::agent::remote_host::RemoteAgentLaunch>,
-    vault_path: Option<&str>,
-) -> PathBuf {
-    let raw = if let Some(rt) = remote {
-        rt.agent_cwd()
-    } else {
-        vault_path
-            .map(PathBuf::from)
-            .filter(|p| p.is_dir())
-            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")))
-    };
-    simplified_agent_cwd(&raw)
 }

@@ -3,7 +3,7 @@
 //!
 //! Coverage: every command registered for desktop in `app::handlers`
 //! (`common_commands!` + the desktop-only extras) is collected here, and every
-//! event emitted on desktop is declared in `app::events_contract` (42 events;
+//! event emitted on desktop is declared in `app::events_contract` (44 events;
 //! `event_name` matches the emit literal, emit sites unchanged). The iOS-only
 //! bridge client commands (`integration::bridge::client_commands`) and client
 //! events (`bridge:status` / `bridge:progress` / `bridge:pair-pending`) are
@@ -133,7 +133,6 @@ fn export_typescript_bindings() {
             crate::features::paper::catalog::commands::paper_page_counts,
             crate::features::paper::catalog::commands::paper_set_page_counts,
             crate::features::paper::catalog::commands::paper_reading_activity_batch,
-            crate::features::paper::import::commands::paper_backfill_publication,
             crate::features::markdown::search::commands::vault_search,
             crate::core::usage::commands::activity_record_events,
             crate::core::usage::commands::usage_list,
@@ -226,6 +225,11 @@ fn export_typescript_bindings() {
             crate::app::finder_service::commands::finder_service_uninstall::<tauri::Wry>,
             crate::features::pdf::export::commands::export_system_cjk_font,
             crate::features::web::commands::web_proxy_allow_host,
+            crate::features::compile::detect_latex_engines,
+            crate::features::compile::clean_latex_aux_files,
+            crate::features::compile::chktex_lint,
+            crate::features::compile::root::resolve_latex_root,
+            crate::features::jobs::commands::job_latex_compile_enqueue,
         ])
         // Desktop event surface (see `app::events_contract`): emit sites keep
         // using `app.emit("<literal>", payload)`; the wrappers/mirrors there
@@ -275,6 +279,7 @@ fn export_typescript_bindings() {
             crate::app::events_contract::PaperImportedEvent,
             crate::app::events_contract::PaperAssetsReadyEvent,
             crate::app::events_contract::PaperRenamedEventPayload,
+            crate::app::events_contract::CompileLogEvent,
         ])
         // Tauri IPC serializes `i64`/`u64`/`usize` through serde_json as JSON
         // numbers, which the frontend already parses as JS `number` via the

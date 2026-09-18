@@ -14,12 +14,14 @@ import { broadcastAgentAttachContext } from "@/lib/agent/context-attach";
 import { copyTextToClipboard } from "@/lib/core/clipboard";
 import { displayPath } from "@/lib/core/path";
 import { isTauri } from "@/lib/core/tauri";
-import { isPaperDirectory } from "@/lib/paper";
-import { LIBRARY_VIRTUAL_PATH, TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
+import { isPaperDirectory, isPapersRoot } from "@/lib/paper";
+import { TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
 import { PLAZA_SOURCES, PLAZA_VIRTUAL_PATH } from "@/lib/plaza";
 import { getSettings, patchSettings } from "@/lib/settings/react-store";
 import { type FileNode, resolveCreateParent } from "@/lib/vault";
 import { openInTerminal, revealInFileManager } from "@/lib/vault/reveal";
+import { openTexPdf } from "@/lib/workspace/actions";
+import { isTexPath } from "@/lib/workspace/viewer";
 import type { TreeContextMenuPortalProps } from "../tree-context-menu";
 import { pathKey } from "../tree-helpers";
 import type {
@@ -57,6 +59,7 @@ export function useTreeContextMenu({
 	openMovePicker,
 	onExportLibrary,
 	onDiscoverCiting,
+	onDownloadAllMissing,
 	onEmptyTrash,
 	onOpenPaperNotes,
 	onEditPaperMeta,
@@ -83,6 +86,8 @@ export function useTreeContextMenu({
 	openMovePicker: (paths: string[], anchor?: { x: number; y: number }) => void;
 	onExportLibrary?: () => void | Promise<void>;
 	onDiscoverCiting?: () => void | Promise<void>;
+	/** Papers root menu: download assets for every incomplete paper. */
+	onDownloadAllMissing?: () => void | Promise<void>;
 	onEmptyTrash?: () => void | Promise<void>;
 	onOpenPaperNotes?: (paperDir: string) => void;
 	onEditPaperMeta?: (paperDir: string) => void;
@@ -104,21 +109,12 @@ export function useTreeContextMenu({
 	const handleContextMenuPath = useCallback(
 		(path: string, event: ReactMouseEvent) => {
 			if (createDraft || renameDraft) return;
-			// Real vault paths + virtual Library (export) / Recycle Bin (empty) /
-			// Plaza root (source visibility toggles).
+			// Real vault paths + virtual Recycle Bin (empty) / Plaza root
+			// (source visibility toggles).
 			if (
 				!canRevealPath(path) &&
 				path !== TRASH_VIRTUAL_PATH &&
-				path !== LIBRARY_VIRTUAL_PATH &&
 				path !== PLAZA_VIRTUAL_PATH
-			) {
-				return;
-			}
-			// Library menu only when it has at least one action wired.
-			if (
-				path === LIBRARY_VIRTUAL_PATH &&
-				!onExportLibrary &&
-				!onDiscoverCiting
 			) {
 				return;
 			}
@@ -128,13 +124,7 @@ export function useTreeContextMenu({
 			setRevealError(null);
 			setMenu({ path, x: event.clientX, y: event.clientY });
 		},
-		[
-			createDraft,
-			renameDraft,
-			onExportLibrary,
-			onDiscoverCiting,
-			prepareContextSelection,
-		],
+		[createDraft, renameDraft, prepareContextSelection],
 	);
 
 	const reveal = useCallback(
@@ -200,8 +190,10 @@ export function useTreeContextMenu({
 	const isPaperMenu =
 		menuNode?.kind === "directory" &&
 		isPaperDirectory(menuNode.path, menuNode.children);
-	const targetIsVirtual =
-		menu.path === LIBRARY_VIRTUAL_PATH || menu.path === TRASH_VIRTUAL_PATH;
+	// The `papers/` root folder carries the library actions.
+	const isLibraryMenu =
+		menuNode?.kind === "directory" && isPapersRoot(menuNode.path);
+	const targetIsVirtual = menu.path === TRASH_VIRTUAL_PATH;
 	const targetKey = pathKey(menu.path);
 	const canPasteAtTarget =
 		cutPaths.length > 0 &&
@@ -216,6 +208,7 @@ export function useTreeContextMenu({
 		menuCount: targets.length,
 		menuNodeName: menuNode?.name,
 		isPaperMenu,
+		isLibraryMenu,
 		libraryExportBusy,
 		citingScanBusy,
 		canPasteAtTarget,
@@ -241,6 +234,12 @@ export function useTreeContextMenu({
 					void onDiscoverCiting();
 				}
 			: undefined,
+		onDownloadAllMissing: onDownloadAllMissing
+			? () => {
+					setMenu(null);
+					void onDownloadAllMissing();
+				}
+			: undefined,
 		onEmptyTrash: onEmptyTrash
 			? () => {
 					setMenu(null);
@@ -253,6 +252,13 @@ export function useTreeContextMenu({
 					onOpenPaperNotes(menu.path);
 				}
 			: undefined,
+		onOpenTexPdf:
+			targets.length === 1 && isTexPath(menu.path)
+				? () => {
+						setMenu(null);
+						void openTexPdf(menu.path);
+					}
+				: undefined,
 		onEditMeta:
 			isPaperMenu && onEditPaperMeta
 				? () => {

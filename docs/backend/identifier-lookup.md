@@ -78,7 +78,7 @@ catalog **始终**写入 `pdf_url` / `html_url`（有则仍可供在线预览）
 
 - **显示条件**：缺 PDF **或**（既无 TeX 也无 `PAPER.md`）。可读正文 **TeX 与 PAPER.md 二选一即可，优先 TeX**（有 TeX 不强制 PAPER.md）。**不再**因缺少空 `source/` 单独显示 Download。hover 说明原因。
 - **点击**：`paper_download_assets` → PDF 到论文根目录 → arXiv 尽量 TeX 到 `source/` → 无 TeX 则 liteparse `PAPER.md`。
-- **Library 行**：库内任一篇不完整时批量同一逻辑。
+- **论文库节点**（`papers/` 根文件夹右键）：库内任一篇不完整时批量同一逻辑。
 
 **精读（Zap 图标 + 自动触发）**：
 
@@ -95,7 +95,7 @@ UI 阅读：优先 catalog 远程 URL；`source/` 为 arXiv TeX 归档；`PAPER.
 | 项 | 值 |
 |---|---|
 | 设置 key | `translatorBaseUrl`（Settings → General） |
-| 默认 | **`https://translator.philfan.cn`** |
+| 默认 | **`https://translation-server.agentero.app`** |
 | Host 常量 | `DEFAULT_TRANSLATOR_BASE_URL`（与设置默认一致） |
 
 - 魔棒入库时前端把设置中的 URL 传入 `lookup_import_batch.args.translatorBaseUrl`。
@@ -726,7 +726,7 @@ arXiv URL 推导：
 
 ### Phase B — Translator 服务
 
-- [x] HTTP 客户端 → `POST {translatorBaseUrl}/search|/web`（默认 `https://translator.philfan.cn`）
+- [x] HTTP 客户端 → `POST {translatorBaseUrl}/search|/web`（默认 `https://translation-server.agentero.app`）
 - [x] map → `PaperRecord` / catalog schema v2；设置页 `translatorBaseUrl`
 - [ ] 可选本机 sidecar 捆绑 / 探测；更细 dedupe UX
 

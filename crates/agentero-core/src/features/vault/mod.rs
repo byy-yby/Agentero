@@ -17,47 +17,13 @@ pub const AGENTS_DIR_README: &str =
 pub const SKILLS_DIR_README: &str =
     include_str!("../../../../../templates/vault/.agents/skills/README.md");
 
-/// Supervisor-Skills (HKUSTDial) CC BY-NC-SA 4.0 text.
-pub const SUPERVISOR_SKILLS_LICENSE: &str =
-    include_str!("../../../../../templates/vault/.agents/skills/LICENSE-Supervisor-Skills.txt");
+/// Minimal LaTeX starter seeded into `thesis/` (only when the folder is absent).
+pub const THESIS_MAIN_TEX: &str = include_str!("../../../../../templates/vault/thesis/main.tex");
 
-/// Bundled paper-reader skill (file-tree Zap workflow).
-pub const PAPER_READER_SKILL: &str =
-    include_str!("../../../../../templates/vault/.agents/skills/paper-reader/SKILL.md");
-
-/// Bundled agentero-cli skill (headless vault discover/import via CLI), POSIX variant.
-pub const AGENTERO_CLI_SKILL: &str =
-    include_str!("../../../../../templates/vault/.agents/skills/agentero-cli/SKILL.md");
-
-/// Bundled agentero-cli skill (headless vault discover/import via CLI), Windows variant.
-pub const AGENTERO_CLI_SKILL_WINDOWS: &str =
-    include_str!("../../../../../templates/vault/.agents/skills/agentero-cli/SKILL-windows.md");
-
-/// Variant for the host platform: the skill id stays the same on every OS, but
-/// the body matches the binary name and shell the agent actually uses.
-pub const AGENTERO_CLI_SKILL_FOR_PLATFORM: &str = if cfg!(windows) {
-    AGENTERO_CLI_SKILL_WINDOWS
-} else {
-    AGENTERO_CLI_SKILL
-};
-
-/// Bundled vault-normalizer skill (directory migration into Agentero layout).
-pub const VAULT_NORMALIZER_SKILL: &str =
-    include_str!("../../../../../templates/vault/.agents/skills/vault-normalizer/SKILL.md");
-
-/// Bundled idea-evaluator skill (from Supervisor-Skills).
-pub const IDEA_EVALUATOR_SKILL: &str =
-    include_str!("../../../../../templates/vault/.agents/skills/idea-evaluator/SKILL.md");
-
-/// Bundled deep-research skill (from Supervisor-Skills).
-pub const DEEP_RESEARCH_SKILL: &str =
-    include_str!("../../../../../templates/vault/.agents/skills/deep-research/SKILL.md");
-
-pub const AUTHOR_LOOKUP_SKILL: &str =
-    include_str!("../../../../../templates/vault/.agents/skills/author-lookup/SKILL.md");
-
-// Onboarding tutorial notes are discovered by build.rs and embedded here.
+// Onboarding notes and bundled skill package files are discovered by build.rs
+// and embedded here.
 include!(concat!(env!("OUT_DIR"), "/onboarding_templates.rs"));
+include!(concat!(env!("OUT_DIR"), "/skill_templates.rs"));
 
 /// Vault-relative path → content for bundled skill seeding (no overwrite).
 /// Paths are under the vault root (e.g. `.agents/skills/...`).
@@ -65,146 +31,7 @@ include!(concat!(env!("OUT_DIR"), "/onboarding_templates.rs"));
 /// When the app ships new skills, [`ensure_vault`] / [`create_vault`] add any
 /// missing paths here; existing files are left untouched so user edits survive.
 pub fn bundled_skill_files() -> &'static [(&'static str, &'static str)] {
-    &[
-        (".agents/skills/README.md", SKILLS_DIR_README),
-        (
-            ".agents/skills/LICENSE-Supervisor-Skills.txt",
-            SUPERVISOR_SKILLS_LICENSE,
-        ),
-        (".agents/skills/paper-reader/SKILL.md", PAPER_READER_SKILL),
-        (
-            ".agents/skills/author-lookup/SKILL.md",
-            AUTHOR_LOOKUP_SKILL,
-        ),
-        // Same skill id on every platform; the body matches the host OS the
-        // CLI (and the agent consuming this skill) actually runs on.
-        (
-            ".agents/skills/agentero-cli/SKILL.md",
-            AGENTERO_CLI_SKILL_FOR_PLATFORM,
-        ),
-        (
-            ".agents/skills/vault-normalizer/SKILL.md",
-            VAULT_NORMALIZER_SKILL,
-        ),
-        // idea-evaluator (Supervisor-Skills)
-        (
-            ".agents/skills/idea-evaluator/SKILL.md",
-            IDEA_EVALUATOR_SKILL,
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/domain-evaluation-frameworks.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/domain-evaluation-frameworks.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/fatal-flaws.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/fatal-flaws.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/five-dimensions.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/five-dimensions.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/lifecycle-capability-matching.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/lifecycle-capability-matching.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/paradigm-elephant.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/paradigm-elephant.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/paradigm-examples.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/paradigm-examples.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/paradigm-first-principles.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/paradigm-first-principles.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/paradigm-hamming.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/paradigm-hamming.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/paradigm-shift-probe.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/paradigm-shift-probe.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/paradigm-technology-cycle.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/paradigm-technology-cycle.md"
-            ),
-        ),
-        (
-            ".agents/skills/idea-evaluator/references/worked-examples.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/idea-evaluator/references/worked-examples.md"
-            ),
-        ),
-        // deep-research (Supervisor-Skills)
-        (
-            ".agents/skills/deep-research/SKILL.md",
-            DEEP_RESEARCH_SKILL,
-        ),
-        (
-            ".agents/skills/deep-research/references/citation-protocol.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/deep-research/references/citation-protocol.md"
-            ),
-        ),
-        (
-            ".agents/skills/deep-research/references/hedge-calibration.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/deep-research/references/hedge-calibration.md"
-            ),
-        ),
-        (
-            ".agents/skills/deep-research/references/output-structure.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/deep-research/references/output-structure.md"
-            ),
-        ),
-        (
-            ".agents/skills/deep-research/references/quality-gates.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/deep-research/references/quality-gates.md"
-            ),
-        ),
-        (
-            ".agents/skills/deep-research/references/search-strategy.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/deep-research/references/search-strategy.md"
-            ),
-        ),
-        (
-            ".agents/skills/deep-research/references/self-adversarial.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/deep-research/references/self-adversarial.md"
-            ),
-        ),
-        (
-            ".agents/skills/deep-research/references/synthesis-framework.md",
-            include_str!(
-                "../../../../../templates/vault/.agents/skills/deep-research/references/synthesis-framework.md"
-            ),
-        ),
-    ]
+    BUNDLED_SKILL_FILES
 }
 
 /// Parse optional integer `version:` from YAML frontmatter (Agentero managed
@@ -332,11 +159,12 @@ fn seed_or_upgrade_bundled_file(
 
 /// Idempotent vault scaffold under `path` without overwriting existing user files.
 ///
-/// Creates: `papers/`, `notes/`, `.agentero/`, `.agents/` (+ `skills/`),
+/// Creates: `papers/`, `notes/`, `data/`, `.agentero/`, `.agents/` (+ `skills/`),
 /// `AGENTS.md` (if missing), seeds `.agents/README.md` and bundled skills from
 /// the app template, safely upgrades managed first-party skills (frontmatter
-/// `version`), seeds localized onboarding tutorial notes under `notes/`, and
-/// initializes `.agentero/catalog.sqlite`.
+/// `version`), seeds localized onboarding tutorial notes under `notes/`, seeds
+/// the `thesis/` LaTeX starter when that folder is absent, and initializes
+/// `.agentero/catalog.sqlite`.
 /// Does **not** create `PAPERS.md` / `library.bib`.
 ///
 /// Safe to call on every vault open after an app update so newly shipped skills
@@ -360,7 +188,14 @@ pub fn ensure_vault(path: &Path, locale: &str) -> Result<CreateVaultResult, AppE
     let mut created: Vec<String> = Vec::new();
     let mut updated: Vec<String> = Vec::new();
 
-    for dir in ["papers", "notes", ".agentero", ".agents", ".agents/skills"] {
+    for dir in [
+        "papers",
+        "notes",
+        "data",
+        ".agentero",
+        ".agents",
+        ".agents/skills",
+    ] {
         let p = join_rel(path, dir);
         if !p.exists() {
             fs::create_dir_all(&p)?;
@@ -377,6 +212,12 @@ pub fn ensure_vault(path: &Path, locale: &str) -> Result<CreateVaultResult, AppE
     // Seed vault-local agent layout from `templates/vault/.agents/`. Missing
     // files are created; known untouched first-party skills may be upgraded.
     seed_file_if_missing(path, ".agents/README.md", AGENTS_DIR_README, &mut created)?;
+    seed_file_if_missing(
+        path,
+        ".agents/skills/README.md",
+        SKILLS_DIR_README,
+        &mut created,
+    )?;
     for (rel, content) in bundled_skill_files() {
         seed_or_upgrade_bundled_file(path, rel, content, &mut created, &mut updated)?;
     }
@@ -385,6 +226,15 @@ pub fn ensure_vault(path: &Path, locale: &str) -> Result<CreateVaultResult, AppE
     let onboarding_files = bundled_onboarding_files(locale);
     for (rel, content) in &onboarding_files {
         seed_file_if_missing(path, rel, content, &mut created)?;
+    }
+
+    // Seed the LaTeX manuscript starter only when `thesis/` does not exist, so
+    // an existing (possibly real) manuscript directory is never touched.
+    let thesis_dir = join_rel(path, "thesis");
+    if !thesis_dir.exists() {
+        fs::create_dir_all(&thesis_dir)?;
+        created.push("thesis/".into());
+        seed_file_if_missing(path, "thesis/main.tex", THESIS_MAIN_TEX, &mut created)?;
     }
 
     // Catalog: always ensure schema (may create catalog.sqlite)
@@ -444,15 +294,14 @@ mod tests {
         let r = create_vault(&dir, "en").expect("create");
         assert!(dir.join("papers").is_dir());
         assert!(dir.join("notes").is_dir());
+        assert!(dir.join("data").is_dir());
+        assert!(dir.join("thesis/main.tex").is_file());
         assert!(!dir.join("plans").exists());
         assert!(dir.join(".agentero").is_dir());
         assert!(dir.join(".agents").is_dir());
         assert!(dir.join(".agents/skills").is_dir());
         assert!(dir.join(".agents/README.md").is_file());
         assert!(dir.join(".agents/skills/README.md").is_file());
-        assert!(dir
-            .join(".agents/skills/LICENSE-Supervisor-Skills.txt")
-            .is_file());
         assert!(dir.join(".agents/skills/paper-reader/SKILL.md").is_file());
         assert!(dir.join(".agents/skills/agentero-cli/SKILL.md").is_file());
         assert!(dir.join(".agents/skills/idea-evaluator/SKILL.md").is_file());
@@ -483,10 +332,12 @@ mod tests {
         assert!(r.created.iter().any(|c| c.starts_with(".agents")));
         assert!(r.created.iter().any(|c| c.starts_with("notes/")));
 
-        // Second call does not wipe AGENTS.md, .agents/README.md, or onboarding notes
+        // Second call does not wipe AGENTS.md, .agents/README.md, onboarding
+        // notes, or a user-edited thesis manuscript.
         fs::write(dir.join("AGENTS.md"), "# custom\n").unwrap();
         fs::write(dir.join(".agents/README.md"), "# keep\n").unwrap();
         fs::write(dir.join(&onboarding_paths[0]), "# edited\n").unwrap();
+        fs::write(dir.join("thesis/main.tex"), "% my thesis\n").unwrap();
         let r2 = create_vault(&dir, "en").expect("again");
         let content = fs::read_to_string(dir.join("AGENTS.md")).unwrap();
         assert!(content.starts_with("# custom"));
@@ -497,6 +348,10 @@ mod tests {
         let onboarding = fs::read_to_string(dir.join(&onboarding_paths[0])).unwrap();
         assert!(onboarding.starts_with("# edited"));
         assert!(!r2.created.iter().any(|c| c == &onboarding_paths[0]));
+        let thesis = fs::read_to_string(dir.join("thesis/main.tex")).unwrap();
+        assert!(thesis.starts_with("% my thesis"));
+        assert!(!r2.created.iter().any(|c| c == "thesis/main.tex"));
+        assert!(!r2.created.iter().any(|c| c == "thesis/"));
 
         let _ = fs::remove_dir_all(&dir);
     }
@@ -768,6 +623,8 @@ mod tests {
         assert!(dir.join(".agentero/catalog.sqlite").is_file());
         assert!(dir.join("AGENTS.md").is_file());
         assert!(dir.join("papers").is_dir());
+        assert!(dir.join("data").is_dir());
+        assert!(dir.join("thesis/main.tex").is_file());
         assert!(!dir.join("PAPERS.md").exists());
         eprintln!(
             "create_vault wrote {} items to {}",

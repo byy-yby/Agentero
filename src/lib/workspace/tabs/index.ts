@@ -10,6 +10,7 @@ export {
 	remapTabsUnderPath,
 	removeTab,
 	removeTabsUnderPath,
+	SPLIT_PANE_ID_MARKER,
 	splitPaneIdForPath,
 	tabIdForPath,
 } from "@/lib/workspace/tabs/model";
@@ -19,6 +20,7 @@ export {
 	paperReadingPlacements,
 	readingPairCloseIds,
 	refreshExcalidrawTab,
+	refreshPdfTab,
 	refreshTextTab,
 	reseedExcalidrawTab,
 	reseedMarkdownTab,

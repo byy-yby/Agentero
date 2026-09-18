@@ -1,4 +1,5 @@
 import { isUnderPapers } from "@/lib/paper/paths";
+import { isRemoteArxivPath } from "@/lib/paper/remote-paper";
 import { isMarkdownPath } from "@/lib/vault/fs";
 
 export type CenterViewMode =
@@ -80,6 +81,27 @@ export function preferredModeForPath(path: string | null): CenterViewMode {
 	if (isMarkdownPath(path)) return "markdown";
 	if (isUnderPapers(path)) return "markdown";
 	return "text";
+}
+
+/**
+ * PDFs outside `papers/` (e.g. a compiled plans/a.pdf) render as a plain
+ * viewer: no layout analysis, visual annotation, translation, selection
+ * toolbar, or marks. Remote arXiv papers keep their own remote behavior.
+ */
+export function isPlainPdfPath(path: string | null): boolean {
+	if (!path) return false;
+	return !isUnderPapers(path) && !isRemoteArxivPath(path);
+}
+
+/** .tex source file outside papers/ (compilable in the file tree). */
+export function isTexPath(path: string | null): boolean {
+	if (!path || !/\.tex$/i.test(path)) return false;
+	return !isUnderPapers(path);
+}
+
+/** Compiled output path for a .tex source: same dir, same stem, .pdf. */
+export function texPdfPath(texPath: string): string {
+	return texPath.replace(/\.tex$/i, ".pdf");
 }
 
 export type TextLanguageId = "json" | "yaml" | "python" | "tex" | "bib";

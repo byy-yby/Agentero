@@ -1,6 +1,7 @@
 pub mod commands;
 
 use crate::core::error::AppError;
+use crate::core::fs::canonicalize_best_effort;
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
@@ -47,6 +48,7 @@ pub enum JobKind {
     CitingScan,
     LibraryIo,
     MetadataRefresh,
+    LatexCompile,
 }
 
 impl JobKind {
@@ -71,6 +73,7 @@ impl JobKind {
             JobKind::CitingScan => "citingScan",
             JobKind::LibraryIo => "libraryIo",
             JobKind::MetadataRefresh => "metadataRefresh",
+            JobKind::LatexCompile => "latexCompile",
         };
         // ParseRefs always runs with online lookup enabled; the segment is
         // kept for fingerprint compatibility with pre-refactor jobs.
@@ -169,6 +172,34 @@ pub struct JobSnapshot {
     #[specta(type = Option<crate::core::json::Json>)]
     pub params: Option<serde_json::Value>,
     pub host: ExecHost,
+}
+
+impl JobSnapshot {
+    pub fn skipped(
+        kind: JobKind,
+        vault_path: String,
+        paper_path: Option<String>,
+        lane: JobLane,
+        phase: impl Into<String>,
+    ) -> Self {
+        Self {
+            id: uuid::Uuid::new_v4().to_string(),
+            kind,
+            lane,
+            state: JobState::Skipped,
+            vault_path,
+            paper_path,
+            fingerprint: kind.fingerprint(false, None),
+            depends_on: Vec::new(),
+            dep_policy: DepPolicy::AllSucceeded,
+            progress: None,
+            phase: Some(phase.into()),
+            error: None,
+            force: false,
+            params: None,
+            host: kind.exec_host(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -437,6 +468,9 @@ fn kind_concurrency(inner: &JobCenterInner, kind: JobKind) -> usize {
         // Online scans / dialog-driven file IO / polite metadata batches:
         // one library-scope renderer job of each kind at a time.
         JobKind::CitingScan | JobKind::LibraryIo | JobKind::MetadataRefresh => 1,
+        // One latexmk build at a time: TeX runs are CPU-heavy and the compile
+        // button is interactive, so a second file waits instead of competing.
+        JobKind::LatexCompile => 1,
         JobKind::PageCount | JobKind::WikiReindex => usize::MAX,
     }
 }
@@ -818,6 +852,29 @@ impl JobCenter {
         .await
     }
 
+    /// Enqueue a latexmk build. `path` is the .tex source (the job's identity
+    /// for dedupe / cancel-for-paper); `params` carries `{ texPath, engine }`
+    /// so the fingerprint folds in the engine choice.
+    pub async fn enqueue_latex_compile(
+        &self,
+        vault: impl Into<PathBuf>,
+        path: impl Into<String>,
+        lane: JobLane,
+        force: bool,
+        params: Option<serde_json::Value>,
+    ) -> JobSnapshot {
+        self.enqueue_core(
+            JobKind::LatexCompile,
+            vault,
+            path,
+            lane,
+            force,
+            None,
+            params,
+        )
+        .await
+    }
+
     /// Shared enqueue path for every kind: normalize, dedupe on
     /// (kind, vault, paper, fingerprint), then register on the lane.
     /// Adding a new kind only needs a `JobKind` variant (with fingerprint +
@@ -833,21 +890,22 @@ impl JobCenter {
         task_id: Option<String>,
         params: Option<serde_json::Value>,
     ) -> JobSnapshot {
-        // `normalize_vault_path` does a synchronous `fs::canonicalize`; run it on
-        // the blocking pool so a slow filesystem never stalls a tokio worker.
-        // This happens before the center lock is taken, so no lock is held
-        // across the await. On the (practically impossible) blocking join error
-        // fall back to the raw path, mirroring `normalize_vault_path`'s own
-        // `unwrap_or(path)`.
+        // `canonicalize_best_effort` does a synchronous `fs::canonicalize`; run
+        // it on the blocking pool so a slow filesystem never stalls a tokio
+        // worker. This happens before the center lock is taken, so no lock is
+        // held across the await. On the (practically impossible) blocking join
+        // error fall back to the raw path, mirroring `canonicalize_best_effort`'s
+        // own `unwrap_or` fallback.
         let raw_vault = vault.into();
         let vault_for_blocking = raw_vault.clone();
-        let vault_path =
-            match tokio::task::spawn_blocking(move || normalize_vault_path(vault_for_blocking))
-                .await
-            {
-                Ok(normalized) => normalized,
-                Err(_) => raw_vault,
-            };
+        let vault_path = match tokio::task::spawn_blocking(move || {
+            canonicalize_best_effort(&vault_for_blocking)
+        })
+        .await
+        {
+            Ok(normalized) => normalized,
+            Err(_) => raw_vault,
+        };
         let paper_path = path.into();
         let fingerprint = kind.fingerprint(force, params.as_ref());
         let key = JobKey {
@@ -892,7 +950,7 @@ impl JobCenter {
     }
 
     pub async fn promote_paper(&self, vault: &Path, path: &str) -> Vec<JobSnapshot> {
-        let vault = normalize_vault_path(vault.to_path_buf());
+        let vault = canonicalize_best_effort(vault);
         let mut snapshots = Vec::new();
         let mut inner = self.inner.lock().await;
         let ids: Vec<JobId> = inner
@@ -960,7 +1018,7 @@ impl JobCenter {
     /// Returns the snapshots of the cancelled jobs so callers can emit
     /// `job:changed` and drain freed slots.
     pub async fn cancel_for_paper(&self, vault: &Path, rel: &str) -> Vec<JobSnapshot> {
-        let vault = normalize_vault_path(vault.to_path_buf());
+        let vault = canonicalize_best_effort(vault);
         let prefix = format!("{rel}/");
         let ids: Vec<JobId> = {
             let inner = self.inner.lock().await;
@@ -993,7 +1051,7 @@ impl JobCenter {
     /// Returns the snapshots of the cancelled jobs so callers can emit
     /// `job:changed` and drain freed slots.
     pub async fn cancel_for_vault(&self, vault: &Path) -> Vec<JobSnapshot> {
-        let vault = normalize_vault_path(vault.to_path_buf());
+        let vault = canonicalize_best_effort(vault);
         let ids: Vec<JobId> = {
             let inner = self.inner.lock().await;
             inner
@@ -1017,6 +1075,19 @@ impl JobCenter {
         cancelled
     }
 
+    /// Returns true if there is an active (Queued or Running) job of `kind`
+    /// targeting `path` in `vault`.
+    pub async fn has_active_job_of_kind(&self, vault: &Path, path: &str, kind: JobKind) -> bool {
+        let vault = canonicalize_best_effort(vault);
+        let inner = self.inner.lock().await;
+        inner.jobs.values().any(|j| {
+            j.vault_path == vault
+                && j.paper_path.as_deref() == Some(path)
+                && j.kind == kind
+                && matches!(j.state, JobState::Queued | JobState::Running)
+        })
+    }
+
     /// Current snapshot for a job id, if it exists.
     pub async fn snapshot(&self, job_id: &str) -> Option<JobSnapshot> {
         let inner = self.inner.lock().await;
@@ -1027,7 +1098,7 @@ impl JobCenter {
     }
 
     pub async fn list(&self, vault: Option<&Path>, path: Option<&str>) -> Vec<JobSnapshot> {
-        let vault = vault.map(|vault| normalize_vault_path(vault.to_path_buf()));
+        let vault = vault.map(canonicalize_best_effort);
         let inner = self.inner.lock().await;
         inner
             .jobs
@@ -1449,7 +1520,7 @@ impl JobCenter {
             id: id.clone(),
             kind,
             lane: JobLane::Normal,
-            vault_path: normalize_vault_path(vault),
+            vault_path: canonicalize_best_effort(&vault),
             paper_path: Some(path.to_string()),
             fingerprint: format!("test:{}", id.0),
             depends_on,
@@ -1675,10 +1746,6 @@ impl Drop for TaskCancelRegistration {
 
 fn release_active_key(inner: &mut JobCenterInner, job_id: &JobId) {
     inner.active_keys.retain(|_, id| id != job_id);
-}
-
-fn normalize_vault_path(path: PathBuf) -> PathBuf {
-    std::fs::canonicalize(&path).unwrap_or(path)
 }
 
 #[cfg(test)]
@@ -2864,5 +2931,44 @@ mod tests {
         drop(registration_second);
         assert!(!is_task_cancelled(task_id));
         assert_eq!(center.cancel_token_count_for_test().await, 0);
+    }
+
+    #[tokio::test]
+    async fn has_active_job_of_kind_matches_queued_or_running_only() {
+        let center = JobCenter::new();
+        let vault = vault("active-job");
+        let path = "papers/test-paper";
+
+        assert!(
+            !center
+                .has_active_job_of_kind(&vault, path, JobKind::RecognizeMetadata)
+                .await
+        );
+
+        let snap = center
+            .enqueue_recognize_metadata(vault.clone(), path, JobLane::Normal, false)
+            .await;
+        assert!(
+            center
+                .has_active_job_of_kind(&vault, path, JobKind::RecognizeMetadata)
+                .await
+        );
+        assert!(
+            !center
+                .has_active_job_of_kind(&vault, path, JobKind::LayoutAnalyze)
+                .await
+        );
+        assert!(
+            !center
+                .has_active_job_of_kind(&vault, "papers/other", JobKind::RecognizeMetadata)
+                .await
+        );
+
+        center.cancel(&snap.id).await;
+        assert!(
+            !center
+                .has_active_job_of_kind(&vault, path, JobKind::RecognizeMetadata)
+                .await
+        );
     }
 }

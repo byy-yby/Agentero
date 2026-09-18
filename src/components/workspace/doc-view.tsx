@@ -1,4 +1,5 @@
 import { lazy, memo, Suspense, useCallback } from "react";
+import { useTranslation } from "react-i18next";
 import { PapersLibrary } from "@/components/library/papers-library";
 import { Skeleton } from "@/components/ui/skeleton";
 import type { PdfViewerHandle } from "@/components/viewer";
@@ -14,6 +15,7 @@ import type { LibraryColumnPref } from "@/lib/settings";
 import { isMarkdownPath, paperRelFromNotes } from "@/lib/vault";
 import type { WikiRenameHeadingRequest } from "@/lib/wiki";
 import { type DocTab, tabIsPaperNotes } from "@/lib/workspace/tabs";
+import { isPlainPdfPath } from "@/lib/workspace/viewer";
 
 // Heavyweight viewers are lazy-loaded so the EmbedPDF (PDFium) and Plate
 // editor bundles stay out of the initial chunk and are fetched on first use.
@@ -116,6 +118,8 @@ export type DocViewTextProps = {
 		content: string,
 		lastSaved: string,
 	) => Promise<boolean>;
+	/** ⌘S manual save: flush landed — TeX compiles here, others no-op. */
+	onManualSave: (path: string) => void;
 	onTabPatch: (id: string, patch: Partial<DocTab>) => void;
 };
 
@@ -161,6 +165,24 @@ function TabLoadingSkeleton() {
 					<Skeleton className="library-shimmer h-3 w-2/3" />
 				</div>
 			</div>
+		</div>
+	);
+}
+
+/**
+ * Compiled-PDF pane while its LaTeX compile is still running: a minimal
+ * centered hint (the bytes do not exist on disk yet).
+ */
+function TexCompilingPlaceholder() {
+	const { t } = useTranslation("app");
+	return (
+		<div
+			className="flex min-h-0 flex-1 flex-col items-center justify-center gap-3 p-6"
+			aria-busy="true"
+			role="status"
+		>
+			<Skeleton className="library-shimmer h-3.5 w-28" />
+			<p className="text-muted-foreground text-xs">{t("tabs.texCompiling")}</p>
 		</div>
 	);
 }
@@ -231,6 +253,9 @@ export const DocView = memo(function DocView({
 		(list: PdfVisualSessionTrace[]) => pdf.onVisualTracesChange(tab.id, list),
 		[pdf, tab.id],
 	);
+	if (tab.texCompiling) {
+		return <TexCompilingPlaceholder />;
+	}
 	if (!tab.loaded) {
 		return <TabLoadingSkeleton />;
 	}
@@ -349,6 +374,7 @@ export const DocView = memo(function DocView({
 						paperMeta={tab.paperMeta}
 						isActive={active}
 						isRemotePaper={isRemoteArxivPath(tab.path)}
+						plainViewer={isPlainPdfPath(tab.path)}
 						importIdentifier={tab.paperMeta?.source_url ?? undefined}
 						onOpenSettings={pdf.onOpenSettings}
 						className="h-full w-full"
@@ -446,7 +472,9 @@ export const DocView = memo(function DocView({
 						seed={tab.textSeed}
 						path={tab.path}
 						reloadKey={tab.textKey}
+						active={active}
 						onPersist={text.onPersistFile}
+						onManualSave={text.onManualSave}
 						onDirtyChange={(d) => text.onTabPatch(tab.id, { textDirty: d })}
 						className="h-full w-full"
 					/>

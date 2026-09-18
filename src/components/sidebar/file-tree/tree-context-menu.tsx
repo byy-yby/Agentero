@@ -1,9 +1,15 @@
-import { Download, Loader2, Radar, Trash2 } from "lucide-react";
+import {
+	ArrowDownToLine,
+	Download,
+	Loader2,
+	Radar,
+	Trash2,
+} from "lucide-react";
 import { type RefObject, useEffect } from "react";
 import { useTranslation } from "react-i18next";
 import { ViewportFloating } from "@/components/ui/viewport-floating";
 import { cn } from "@/lib/core/utils";
-import { LIBRARY_VIRTUAL_PATH, TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
+import { TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
 import {
 	PLAZA_VIRTUAL_PATH,
 	type PlazaSource,
@@ -19,6 +25,8 @@ export type TreeContextMenuPortalProps = {
 	menuCount: number;
 	menuNodeName?: string;
 	isPaperMenu: boolean;
+	/** `papers/` root: prepend the library actions to the folder menu. */
+	isLibraryMenu: boolean;
 	libraryExportBusy: boolean;
 	citingScanBusy: boolean;
 	canPasteAtTarget: boolean;
@@ -31,8 +39,12 @@ export type TreeContextMenuPortalProps = {
 	onExportLibrary?: () => void;
 	/** Scan the whole library for new papers citing it. */
 	onDiscoverCiting?: () => void;
+	/** Download assets for every incomplete paper in the library. */
+	onDownloadAllMissing?: () => void;
 	onEmptyTrash?: () => void;
 	onOpenNotes?: () => void;
+	/** .tex row: open (or compile then open) the compiled PDF beside it. */
+	onOpenTexPdf?: () => void;
 	/** Paper row: open the catalog metadata editor. */
 	onEditMeta?: () => void;
 	/** Add the right-clicked file/paper to the Agent chat as a context chip. */
@@ -55,6 +67,7 @@ export function TreeContextMenuPortal({
 	menuCount,
 	menuNodeName,
 	isPaperMenu,
+	isLibraryMenu,
 	libraryExportBusy,
 	citingScanBusy,
 	canPasteAtTarget,
@@ -63,8 +76,10 @@ export function TreeContextMenuPortal({
 	onClose,
 	onExportLibrary,
 	onDiscoverCiting,
+	onDownloadAllMissing,
 	onEmptyTrash,
 	onOpenNotes,
+	onOpenTexPdf,
 	onEditMeta,
 	onAddToChat,
 	onNewFile,
@@ -109,13 +124,12 @@ export function TreeContextMenuPortal({
 	}, [menu]);
 
 	const isTrashMenu = menu.path === TRASH_VIRTUAL_PATH;
-	const isLibraryMenu = menu.path === LIBRARY_VIRTUAL_PATH;
 	const isPlazaMenu = menu.path === PLAZA_VIRTUAL_PATH;
 
 	const revealLabel = t(revealInOsLabelKey());
 	const revealShortcut = formatShortcutById("revealInFinder");
 	const openInTerminalShortcut = formatShortcutById("openInTerminal");
-	const openNotesShortcut = formatShortcutById("splitPane");
+	const splitPaneShortcut = formatShortcutById("splitPane");
 	const deleteShortcut = formatShortcutById("deleteTreeItem");
 	const cutShortcut = formatShortcutById("cutTreeItem");
 	const pasteShortcut = formatShortcutById("pasteTreeItem");
@@ -129,6 +143,17 @@ export function TreeContextMenuPortal({
 		>
 			{isLibraryMenu ? (
 				<>
+					{onDownloadAllMissing ? (
+						<button
+							type="button"
+							role="menuitem"
+							className="flex w-full cursor-default items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+							onClick={onDownloadAllMissing}
+						>
+							<ArrowDownToLine className="size-3.5 shrink-0" aria-hidden />
+							<span>{t("fileTree.downloadAllMissing")}</span>
+						</button>
+					) : null}
 					{onExportLibrary ? (
 						<button
 							type="button"
@@ -176,7 +201,8 @@ export function TreeContextMenuPortal({
 						</button>
 					) : null}
 				</>
-			) : isTrashMenu ? (
+			) : null}
+			{isTrashMenu ? (
 				onEmptyTrash ? (
 					<button
 						type="button"
@@ -225,7 +251,20 @@ export function TreeContextMenuPortal({
 						>
 							<span>{t("fileTree.openNotes")}</span>
 							<span className="text-muted-foreground text-xs tracking-wide">
-								{openNotesShortcut}
+								{splitPaneShortcut}
+							</span>
+						</button>
+					) : null}
+					{menuCount === 1 && onOpenTexPdf ? (
+						<button
+							type="button"
+							role="menuitem"
+							className="flex w-full cursor-default items-center justify-between gap-4 rounded-md px-2 py-1.5 text-left text-sm outline-hidden select-none hover:bg-accent hover:text-accent-foreground focus:bg-accent focus:text-accent-foreground"
+							onClick={onOpenTexPdf}
+						>
+							<span>{t("fileTree.openTexPdf")}</span>
+							<span className="text-muted-foreground text-xs tracking-wide">
+								{splitPaneShortcut}
 							</span>
 						</button>
 					) : null}

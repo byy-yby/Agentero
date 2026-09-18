@@ -90,6 +90,7 @@ Host 通过 Tauri event 向前端推送事件。文件系统、任务和菜单�
 - 同步 `#[tauri::command]` 在主线程内执行；Windows 主线程即 UI 消息泵，重 IO 同步 command 执行期间整窗冻结。
 - **重 IO command（扫盘、SQLite、全库索引、字体/大文件读取等）必须写成 `async fn`**，阻塞体统一用 `core::blocking::run_blocking`（agentero-core，内部 `tokio::task::spawn_blocking`，与 Tauri 运行时同一 tokio 阻塞池）移出调用线程；对外返回 JSON 结构不变，前端 invoke 透明。
 - 使用 `State<'_, T>` 的 async command 受 Tauri 限制必须返回 `Result`（惯例 `Result<ApiResult<T>, String>`，恒为 `Ok(...)`）。`std::sync::Mutex` guard 不能跨 `await`：把「拿锁 + 干活」整体放进 `run_blocking` 闭包，State 先 clone 出可 `Send + 'static` 的 Arc 句柄（如 `WikiIndexState::handle()`、`CapsCache`、`ExternalRenameRepairStore`）。
+- command 前置检查的早退样板统一用 `app/command_util.rs` 的宏（逐字展开为原 `match … { Err(e) => return … map_err(e) }` 形状，IPC 错误语义不变）：`try_vault!`（返回 `ApiResult<T>` 的命令/vault 解析）、`try_vault_ok!` / `try_session!`（返回 `Result<ApiResult<T>, String>` 的命令 / vault 解析、remote session 获取）、`lock_wiki_index!`（wiki index `MutexGuard` 获取，可选第二参数附带 `ensure_vault`）。`try_vault!`/`try_vault_ok!`/`try_session!` 与 `lock_wiki_index!` 均支持可选 `OpTimer` 尾参（先走 `finish_err` 再返回；裸锁臂写作 `lock_wiki_index!(index; op)`）。jobs 命令另有模块本地 `try_job_paper!`（`validate_job_paper` 早退）与 `start_enqueued`（enqueue → announce/start 共用尾段）。
 - 已按此约定改造：`vault_*`（create/ensure/tree_build/tree_children）、`wiki_*` 全部、`graph_*`、`vault_search`、`paper_*`（catalog）、`usage_*`/`activity_record_events`、`zotero_sync`/`zotero_scan`、`doctor_*`（除纯内存的 `doctor_set_dirty_paths`）、`list_system_fonts`（另有进程级缓存）、`export_system_cjk_font`、`paper_stage_import_file`、`paper_refs_list`、`connector_set_enabled`/`connector_set_port`（bind 改真 async，不再 `block_on`）。
 
 ### 2.6 类型化 IPC 契约（tauri-specta → `src/lib/core/bindings.ts`）
@@ -153,11 +154,12 @@ Host 通过 Tauri event 向前端推送事件。文件系统、任务和菜单�
 ```
 
 - **行为**
-  - 确保目录存在；脚手架 `papers/`、`notes/`、`.agentero/`、**`.agents/`**、**`.agents/skills/`**。
+  - 确保目录存在；脚手架 `papers/`、`notes/`、`data/`、`.agentero/`、**`.agents/`**、**`.agents/skills/`**。
   - 初始化 `.agentero/catalog.sqlite`（schema 当前版本，含 Translator 元数据列）。详见 [`catalog.md`](catalog.md)。
   - 写入默认 `AGENTS.md`（若不存在）。
+  - 当 `thesis/` 不存在时写入 LaTeX 起手稿 `thesis/main.tex`（现有 `thesis/` 目录保持原样）；`data/` 为远端服务器数据预留的空目录。
   - 写入 **`.agents/README.md`**（若不存在；内容来自仓库 `templates/vault/.agents/`）。
-  - 种子 **bundled skills**：`paper-reader`、`author-lookup`、`agentero-cli`、`vault-normalizer`、`idea-evaluator`、`deep-research`（后两者含 `references/`，来自 [Supervisor-Skills](https://github.com/HKUSTDial/Supervisor-Skills)，**CC BY-NC-SA 4.0**；另写 `skills/README.md` 与 `LICENSE-Supervisor-Skills.txt`）。
+  - 种子 **bundled skills**：构建时自动发现 `templates/vault/.agents/skills/<id>/` 下的 Skill package 并内嵌，创建 Vault 时写入缺失文件；`agentero-cli` 按平台把 POSIX / Windows 模板映射到同一 `.agents/skills/agentero-cli/SKILL.md`。另写 `skills/README.md`。
   - **不**创建根级 `PAPERS.md` / `library.bib`；已有第一方 `SKILL.md` 按 frontmatter 整数 `version` 升级（见 `vault_ensure`）；用户去掉/抬高 `version` 的修改与其它 `.agents/**` 文件保持原样。
   - 最近列表由前端在成功打开后写入 `localStorage`（`agentero-recent-vaults`）。
 
@@ -912,7 +914,7 @@ Agent：`agent_run_once` / `agent_warm` 在 vault 为 `remote:…` 时经 SSH `b
 **交互**：侧边栏魔棒 → 粘贴链接/编号 → Host `lookup_import_batch` → Translator → 写 paper 文件夹。  
 详见 [`paper-import.md`](paper-import.md)。
 
-**Translator 默认地址**：`https://translator.philfan.cn`（设置 `translatorBaseUrl` 可改）。  
+**Translator 默认地址**：`https://translation-server.agentero.app`（设置 `translatorBaseUrl` 可改）。  
 `POST {base}/search` 或 `/web`，body 为 plain text。
 
 #### `lookup_import_batch`（魔棒批量入库）
@@ -924,7 +926,7 @@ Agent：`agent_run_once` / `agent_warm` 在 vault 为 `remote:…` 时经 SSH `b
     vaultPath: string;
     parentDir: string;              // "papers" | "papers/nlp"
     texts: string[];                // 拆分后的原始 token 数组
-    translatorBaseUrl?: string;     // 来自设置，默认 https://translator.philfan.cn
+    translatorBaseUrl?: string;     // 来自设置，默认 https://translation-server.agentero.app
     taskId?: string;                // 前端后台任务 id；单条进度聚合在该任务下
     concurrency?: number;           // 最大并发入库数，默认 5，范围 1–10
   }
@@ -986,7 +988,7 @@ Agent：`agent_run_once` / `agent_warm` 在 vault 为 `remote:…` 时经 SSH `b
 
 #### `paper_download_assets`
 
-为已有 paper 文件夹补下载缺失的 PDF（及 arXiv LaTeX）。用于文件树单篇 Download，以及 Library 行「下载全部缺失」。下载完成后前端会独立入队 `paper_parse_body` 后台任务生成 `PAPER.md`（若该 paper 无 TeX 且有 PDF）。
+为已有 paper 文件夹补下载缺失的 PDF（及 arXiv LaTeX）。用于文件树单篇 Download，以及 `papers/` 论文库节点右键「下载全部不完整论文资源」。下载完成后前端会独立入队 `paper_parse_body` 后台任务生成 `PAPER.md`（若该 paper 无 TeX 且有 PDF）。
 
 - **参数**（invoke 字段名 `args`）：
 
@@ -1608,7 +1610,7 @@ Host 作为 ACP Client：按注册表 spawn 用户本机 Agent（`cwd` = 当前 
 {
   id?: string; // 省略则新建
   name: string;
-  template?: 'opencode' | 'openclaw' | 'hermes' | 'claude-acp' | 'codex-acp' | 'qodercli' | 'grok-build' | 'pi' | 'dsh' | 'kimi-code' | 'custom';
+  template?: 'opencode' | 'openclaw' | 'hermes' | 'claude-acp' | 'codex-acp' | 'qodercli' | 'grok-build' | 'pi' | 'dsh' | 'kimi-code' | 'zcode' | 'custom';
   command: string;
   args?: string[];
   env?: Record<string, string>;
@@ -1657,11 +1659,11 @@ Host 作为 ACP Client：按注册表 spawn 用户本机 Agent（`cwd` = 当前 
 > 已取代旧的 `agent_open_install_terminal`（打开系统终端、Enter 确认后再装）。远端仍用 `remote_agent_open_install_terminal`（SSH 确认安装）。
 
 - **参数**：`{ templateId: string, action: "install" | "update" | "uninstall", taskId?: string }`
-  - 支持的 `templateId`：`opencode` · `openclaw` · `claude-acp` · `codex-acp` · `hermes` · `grok-build` · `pi` · `dsh` · `kimi-code`（不含 `qodercli` / `custom`）
+  - 支持的 `templateId`：`opencode` · `openclaw` · `claude-acp` · `codex-acp` · `hermes` · `grok-build` · `pi` · `dsh` · `kimi-code` · `zcode`（不含 `qodercli` / `custom`）
   - `taskId` 来自设置页 Agent 行内安装进度条；用于匹配 Host progress tick 与接收协作取消信号。
 - **返回**：`{ ok: true; data: null }` 或错误（stderr/stdout 末尾若干行）
 - **行为**
-  - `install`：未装 host 时走官方 installer（POSIX curl→临时文件再 bash，非 `curl|bash`）或 npm；Claude/Codex/Pi 在 host 已存在但 ACP 缺失时只装适配器；两者都缺则 host && adapter；Hermes 走官方 installer；OpenClaw 走 npm。Pi 无原生 ACP，ACP 入口是社区适配器 `pi-acp`（detect 用 host `pi`）；host 与 adapter 两层都走 npm，因为 `pi.dev/install.sh` 是交互式 TUI installer，不能静默执行。Dsh 是目录级 npm 项目安装：Host 先在 `~/.agentero/dsh-acp` 写入默认 `cordis.yml` 与最小 `package.json`（已存在则不覆盖），再 `npm i` 固定版本的 `dsh-acp-demo` + 插件栈；launcher、home npm 根或 PATH 已有入口时 `install` 跳过下载，`update` 仍刷新 launcher 副本。Kimi Code 优先官方 installer（`code.kimi.com`，单二进制装入 `~/.kimi-code`），失败回退 `npm i -g @moonshot-ai/kimi-code`。
+  - `install`：未装 host 时走官方 installer（POSIX curl→临时文件再 bash，非 `curl|bash`）或 npm；Claude/Codex/Pi 在 host 已存在但 ACP 缺失时只装适配器；两者都缺则 host && adapter；Hermes 走官方 installer；OpenClaw 走 npm。Pi 无原生 ACP，ACP 入口是社区适配器 `pi-acp`（detect 用 host `pi`）；host 与 adapter 两层都走 npm，因为 `pi.dev/install.sh` 是交互式 TUI installer，不能静默执行。Dsh 是目录级 npm 项目安装：Host 先在 `~/.agentero/dsh-acp` 写入默认 `cordis.yml` 与最小 `package.json`（已存在则不覆盖），再 `npm i` 固定版本的 `dsh-acp-demo` + 插件栈；launcher、home npm 根或 PATH 已有入口时 `install` 跳过下载，`update` 仍刷新 launcher 副本。Kimi Code 优先官方 installer（`code.kimi.com`，单二进制装入 `~/.kimi-code`），失败回退 `npm i -g @moonshot-ai/kimi-code`。ZCode 是单包 npm 适配器（`zcode-acp-server`，桥接 ZCode 桌面应用的 `zcode app-server`），host 与 ACP 入口同二进制。
   - `update`：优先 `tool update` / 官方链，失败再 npm；Codex 固定 npm（避免假成功）；OpenClaw 使用 `openclaw update --yes` 后 fallback npm；Pi 使用 `pi update --self` 后 fallback npm；Windows 上 OpenCode 不用交互式 `upgrade`。Kimi 的 `kimi upgrade` 是交互式，静默 update 直接重跑官方 installer（幂等）。
   - `uninstall`：镜像安装矩阵做 best-effort 清理（先 `resolve_command("npm")` 预检，缺失即报错而非假成功）——npm 全局包逐个 `npm uninstall -g`（unix 上适配器带 `--prefix "$HOME/.local"`，与安装一致）；dsh 删除受管目录 `~/.agentero/dsh-acp`，kimi-code 在 npm 卸载后删除 `~/.kimi-code`（Windows 为 `%USERPROFILE%\.kimi-code`）；**不改 shell rc**（官方 installer 写入的 PATH 行保留）、不处理官方脚本/brew 安装的 CLI（无法可靠定位）。Hermes 无 npm 包/受管目录 → 仅移除注册项（不跑命令）。成功后同命令联动删除该模板的 catalog 注册项（`catalog-{templateId}`，或 command+args 匹配），避免二进制已删而注册项残留；phase 用 `agent-lifecycle-uninstall` 推送进度。
   - 本机 lifecycle 全局串行执行，避免多个 npm 全局安装/升级任务并发抢锁或互相覆盖临时脚本；设置页在对应 Agent 卡片内展示安装 / 扫描 / 探测阶段进度（#250）。
@@ -1693,7 +1695,7 @@ Host 作为 ACP Client：按注册表 spawn 用户本机 Agent（`cwd` = 当前 
   - `updateAvailable`：仅当目标版本**严格新于**本地时为 `true`；无法判定时省略/`null`（UI 不显示升级）
 - **行为**
   - 同步 PATH scan 后，在 `spawn_blocking` 中跑 `--version` / `npm view`（尊重代理设置）。
-  - npm 包映射：`opencode-ai` / `openclaw` / `@anthropic-ai/claude-code` / `@openai/codex` / `@earendil-works/pi-coding-agent` / `@xai-official/grok` / `@moonshot-ai/kimi-code`；dsh 对比 pin；**hermes 本轮不探测**（无稳定 npm 源）。
+  - npm 包映射：`opencode-ai` / `openclaw` / `@anthropic-ai/claude-code` / `@openai/codex` / `@earendil-works/pi-coding-agent` / `@xai-official/grok` / `@moonshot-ai/kimi-code` / `zcode-acp-server`；dsh 对比 pin；**hermes 本轮不探测**（无稳定 npm 源）。
   - 不写入 registry；设置页打开/刷新与 lifecycle 成功后调用。
 - **实现**：`registry/version_check.rs` · `commands::agent_check_catalog_updates`
 

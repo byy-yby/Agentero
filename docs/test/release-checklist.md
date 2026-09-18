@@ -188,7 +188,7 @@ cargo test -p agentero-cli
 | 5.6 | 左栏·Info | 添加 tag，选一种颜色 | chip 出现；Library tags 列同色；重启后仍在 | ☐ |
 | 5.7 | 左栏·Info | 删除某 tag | Library 与 Info 同步消失 | ☐ |
 | 5.8 | 中间栏·Library | 点 **Rescan**（空态或工具栏） | 盘上有、表中无的 paper 出现 | ☐ |
-| 5.9 | 左栏·树 | 在 Library 节点右键 **导出论文库** | 得到可用 BibTeX | ☐ |
+| 5.9 | 左栏·树 | 在 `papers/` 论文库节点右键 **导出论文库** | 得到可用 BibTeX | ☐ |
 | 5.10 | 中间栏·Library | 对缺 PDF 的行触发批量 Download | 任务条有进度；缺的资源补齐 | ☐ |
 | 5.11 | 中间栏·Library | 打开有阅读记录的 paper，回到 Library | 标题列左侧出现阅读热力条；未读论文无热力条 | ☐ |
 
@@ -380,6 +380,9 @@ cargo test -p agentero-cli
 | 11.1.9 | 右栏·Agent | 看回答中的 Sources（若 Agent 返回） | 展示读过的本地路径 | ☐ |
 | 11.1.10 | 右栏·Agent（支持 Client terminal 的 Agent） | 依次执行 `pwd`、`echo AGENTERO_SMOKE`，再启动长命令，发送 `wait_for_exit` 并在等待期间读取 output、kill、release | 前两条及时返回；wait 挂起时同连接仍能处理 output / kill / release，卡片最终 completed / failed | ☐ |
 | 11.1.11 | 右栏·Agent | 在工具卡 pending 时结束或取消回合，再依次接收迟到 progress、completion、progress | 回合结束后不保留永久 spinner；内容与终态按同一 toolCallId 修正原卡片，迟到 progress 不恢复 spinner，也不新增重复卡片 | ☐ |
+| 11.1.12 | Windows · 设置 → Agent | 原生 `.exe` 探针模拟 initialize 阻塞，等待 30 秒超时并重复探测；查看父子进程 | 探针没有新增外层 CMD；超时后目标 `.exe` 被回收。Pi / Custom / npm shim / Dsh 自带 launcher 的后代清理单独记录，见 [cwd 边界](../bug_fix/pi-acp-vault-cwd.md#5-边界) | ☐ |
+| 11.1.13 | Windows · Dsh | 在含空格的用户路径与 Vault 下探测、发送一轮消息 | 仅使用 Dsh 自带 launcher，不新增双层 CMD；launcher 配置与认证可读取 | ☐ |
+| 11.1.14 | macOS · Finder 启动 | 打开本地 Vault，用 Codex 精读论文；无 Vault 时执行探针 | 会话进程 cwd 为 Vault，探针为 scratch；不因继承 `/` 触发 Music / Desktop / Downloads 等无关 TCC 弹窗 | ☐ |
 
 ### 11.2 权限
 

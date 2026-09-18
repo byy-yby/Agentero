@@ -5,6 +5,7 @@ mod bindings_test;
 // `pub(crate)`: the mirror-shape anti-drift tests live in the owning modules
 // of the private payload structs and reference the mirrors from here. Test
 // builds only — the module does not exist otherwise.
+pub(crate) mod command_util;
 #[cfg(test)]
 pub(crate) mod events_contract;
 mod handlers;
@@ -187,6 +188,7 @@ pub fn run() {
             crate::features::paper::analyze::refs::register_job_runners(&center);
             crate::features::paper::import::job_runners::register_job_runners(&center);
             crate::features::paper::analyze::layout::model_assets::register_job_runners(&center);
+            crate::features::compile::register_job_runners(&center);
             let handle = app.handle().clone();
             center.set_layout_backend_source(move || {
                 handle.state::<AppSettingsStore>().layout_backend()

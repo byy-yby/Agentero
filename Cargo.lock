@@ -87,21 +87,18 @@ dependencies = [
 
 [[package]]
 name = "agentero"
-version = "0.10.3"
+version = "0.11.1"
 dependencies = [
  "agent-client-protocol",
  "agentero-core",
  "async-trait",
  "axum",
  "base64 0.22.1",
- "bitflags 2.13.1",
  "chrono",
  "crypto_box",
  "dirs",
- "dom_smoothie",
  "ed25519-dalek",
  "encoding_rs",
- "feed-rs",
  "flate2",
  "fontdb 0.23.0",
  "futures-util",
@@ -115,7 +112,6 @@ dependencies = [
  "openssh-sftp-client",
  "os_info",
  "posthog-rs",
- "pulldown-cmark",
  "reqwest 0.12.28",
  "rmcp",
  "rusqlite",
@@ -143,7 +139,6 @@ dependencies = [
  "tauri-plugin-updater",
  "tauri-specta",
  "tempfile",
- "thiserror 2.0.20",
  "tokio",
  "tokio-tungstenite",
  "tokio-util",
@@ -158,7 +153,7 @@ dependencies = [
 
 [[package]]
 name = "agentero-cli"
-version = "0.10.3"
+version = "0.11.1"
 dependencies = [
  "agentero-core",
  "assert_cmd",
@@ -177,7 +172,7 @@ dependencies = [
 
 [[package]]
 name = "agentero-core"
-version = "0.10.3"
+version = "0.11.1"
 dependencies = [
  "async-trait",
  "base64 0.22.1",

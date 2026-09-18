@@ -32,7 +32,11 @@ export type PdfViewerProps = {
 	 * some webviews (Windows WebView2). `source` is the fallback (remote https).
 	 */
 	sourceBytes?: ArrayBuffer | null;
-	/** Stable per-tab document id (EmbedPDF documentId + scope key). */
+	/**
+	 * Base per-tab document id (EmbedPDF scope key). Buffer-backed sources get
+	 * a per-read revision suffix inside the viewer so a reloaded PDF registers
+	 * under a fresh PDFium document.
+	 */
 	docId?: string | null;
 	/** Absolute path to paper folder for annotations/marks persistence */
 	paperAbsPath?: string | null;
@@ -82,13 +86,28 @@ export type PdfViewerProps = {
 	 */
 	isRemotePaper?: boolean;
 	/**
+	 * True for PDFs outside `papers/` (e.g. a compiled plans/a.pdf). Renders a
+	 * plain viewer: layout analysis, visual annotation, full-text translation,
+	 * the selection toolbar, and annotations are all hidden; basic reading
+	 * (pages, zoom, search, text selection + copy) stays.
+	 */
+	plainViewer?: boolean;
+	/**
 	 * Identifier used by the "Import to library" action for remote papers.
 	 * Usually the arXiv abs/source URL.
 	 */
 	importIdentifier?: string;
 };
 
-export type PdfViewerInnerProps = PdfViewerProps & { docId: string };
+export type PdfViewerInnerProps = PdfViewerProps & {
+	docId: string;
+	/**
+	 * Revision-stripped document id (the tab id / stable scope key). Cross-pane
+	 * callers — e.g. `onOpenTranslationTab`, which resolves it back to a
+	 * workspace tab — need this form, not the per-buffer `docId`.
+	 */
+	baseDocId: string;
+};
 
 /** Viewport-space point (client px) used by every floating overlay. */
 export type ScreenPoint = {

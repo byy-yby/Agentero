@@ -26,6 +26,7 @@ import { refreshTree, vaultStore } from "@/lib/vault/store";
 import { shouldIgnoreInternalRenameEvent } from "@/lib/wiki/store";
 import {
 	applyDiskChange,
+	compileTexOnManualSave,
 	persistExcalidrawFile,
 	persistFile,
 	persistTextFile,
@@ -36,6 +37,7 @@ import {
 	loadTabResources,
 	patchFromTabResources,
 	refreshExcalidrawTab,
+	refreshPdfTab,
 	refreshTextTab,
 	reseedMarkdownTab,
 	reseedNotesTab,
@@ -209,6 +211,12 @@ export function DocWindowRoot() {
 					return refreshTextTab([prev], absPath, content)[0] ?? prev;
 				});
 			},
+			refreshPdf: (absPath: string, bytes: ArrayBuffer) => {
+				setTab((prev) => {
+					if (!prev) return prev;
+					return refreshPdfTab([prev], absPath, bytes)[0] ?? prev;
+				});
+			},
 		}),
 		[],
 	);
@@ -224,6 +232,8 @@ export function DocWindowRoot() {
 	const textProps = useMemo(
 		() => ({
 			onPersistFile: persistTextFile,
+			// ⌘S in a popout window compiles the same way as the main dock.
+			onManualSave: (path: string) => void compileTexOnManualSave(path),
 			onTabPatch: onTabPatch,
 		}),
 		[onTabPatch],

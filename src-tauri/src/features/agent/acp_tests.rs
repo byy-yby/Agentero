@@ -50,7 +50,22 @@ mod acp_live {
         assert!(ids.contains(&"pi"));
         assert!(ids.contains(&"dsh"));
         assert!(ids.contains(&"kimi-code"));
+        assert!(ids.contains(&"zcode"));
         assert!(!ids.contains(&"custom"));
+    }
+
+    #[test]
+    fn zcode_template_uses_the_acp_adapter() {
+        let zcode = catalog_templates()
+            .into_iter()
+            .find(|entry| entry.id == "zcode")
+            .expect("ZCode template");
+        assert_eq!(zcode.command, "zcode-acp-server");
+        assert_eq!(zcode.args, Vec::<String>::new());
+        // The adapter discovers the desktop app's zcode.cjs itself, so the
+        // "installed" badge tracks the adapter rather than a host `zcode` CLI.
+        assert_eq!(zcode.detect_command.as_deref(), Some("zcode-acp-server"));
+        assert!(zcode.install_command.is_some());
     }
 
     #[test]
@@ -252,7 +267,9 @@ mod acp_live {
             "codex-acp",
             vec![],
         );
-        let cwd = std::env::current_dir().expect("cwd");
+        let vault = std::env::current_dir().expect("cwd");
+        let cwd =
+            crate::features::agent::acp::client::agent_spawn_cwd(None, vault.to_str()).unwrap();
         let result = list_acp_sessions(&d, cwd.clone(), None, None)
             .await
             .expect("session/list must succeed");
@@ -393,31 +410,5 @@ mod list_sessions_paging {
             1,
             LIST_SESSIONS_BUDGET
         ));
-    }
-
-    #[test]
-    fn simplified_agent_cwd_strips_extended_prefix() {
-        use crate::features::agent::acp::client::simplified_agent_cwd;
-
-        // Rust canonicalize() hands back extended-length drive paths; MSYS2
-        // shells cannot cd into them, so the agent must receive the plain form.
-        assert_eq!(
-            simplified_agent_cwd(std::path::Path::new(r"\\?\D:\Documents\Zotero")),
-            std::path::PathBuf::from(r"D:\Documents\Zotero")
-        );
-        assert_eq!(
-            simplified_agent_cwd(std::path::Path::new(r"D:\Documents\Zotero")),
-            std::path::PathBuf::from(r"D:\Documents\Zotero")
-        );
-        // UNC layouts have no plain drive form and stay unchanged.
-        assert_eq!(
-            simplified_agent_cwd(std::path::Path::new(r"\\?\UNC\server\share")),
-            std::path::Path::new(r"\\?\UNC\server\share")
-        );
-        // POSIX paths pass through untouched.
-        assert_eq!(
-            simplified_agent_cwd(std::path::Path::new("/home/user/vault")),
-            std::path::Path::new("/home/user/vault")
-        );
     }
 }
