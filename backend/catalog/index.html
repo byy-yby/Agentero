@@ -3444,6 +3444,34 @@
 
               
             
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../bug_fix/macos-tcc-folder-prompts/" class="md-nav__link">
+        
+  
+  
+  <span class="md-ellipsis">
+    
+  
+    macOS 首次精读弹出 Music / iCloud / 文件夹权限（#570）
+  
+
+    
+  </span>
+  
+  
+
+      </a>
+    </li>
+  
+
+              
+            
           </ul>
         </nav>
       
@@ -3596,7 +3624,7 @@
 </tr>
 <tr>
 <td><code>paper_update_meta</code></td>
-<td>手动编辑元数据（patch 语义：只更新传入字段，空串清空；置 <code>meta_source=manual</code>；改标题时向 NOTES.md aliases 追加新标题）。远程 Vault 暂不支持</td>
+<td>手动编辑元数据（patch 语义：只更新传入字段，空串清空；置 <code>meta_source=manual</code>；改标题时同步 NOTES.md：合并 aliases 旧+新标题，占位 H1 替换为新标题，用户自拟标题保留）。远程 Vault 暂不支持</td>
 </tr>
 <tr>
 <td><code>paper_rescan</code></td>
