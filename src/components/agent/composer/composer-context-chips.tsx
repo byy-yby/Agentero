@@ -1,20 +1,13 @@
-import { Quote, ScanSearch, Sparkles, X } from "lucide-react";
+import type { TFunction } from "i18next";
+import { Quote, ScanSearch, X } from "lucide-react";
 import { useTranslation } from "react-i18next";
 import { ContextPathIcon } from "@/components/agent/context-path-icon";
-import type { AgentSkill } from "@/lib/agent";
 import type { SelectionContext } from "@/lib/agent/selection-store";
 import type { PdfVisualDraft } from "@/lib/agent/visual-context-store";
 import { basenameOf } from "@/lib/core/path";
 import { cn, truncateToChars } from "@/lib/core/utils";
 
 const MAX_CHIP_TITLE_CHARS = 9;
-
-function cleanSkillDisplayName(name: string): string {
-	return name
-		.trim()
-		.replace(/^[/$]+/, "")
-		.replace(/^skill\s*:\s*/i, "");
-}
 
 /**
  * Icon-first chip: hover / focus animates width open to reveal a short label + X.
@@ -57,6 +50,29 @@ function chipShellClass(extra?: string) {
 		"group inline-flex h-7 max-w-full items-center rounded-full border bg-muted/20 px-1.5 text-foreground text-xs transition-colors hover:bg-muted",
 		extra,
 	);
+}
+
+/**
+ * Code-editor selection chip label — `main.tex 75-77行` (single line:
+ * `main.tex 75行`). Null for selections without a line span (PDF page
+ * chips / plain markdown quotes). Composer context chips only — the
+ * inline-input quote chip stays filename-only.
+ */
+function selectionLineChipLabel(
+	t: TFunction<"agent", undefined>,
+	sel: Pick<SelectionContext, "lineFrom" | "lineTo">,
+	title: string,
+): string | null {
+	const { lineFrom, lineTo } = sel;
+	if (lineFrom == null) return null;
+	if (lineTo != null && lineTo > lineFrom) {
+		return t("composer.selectionChipWithLines", {
+			title,
+			from: lineFrom,
+			to: lineTo,
+		});
+	}
+	return t("composer.selectionChipWithLine", { title, from: lineFrom });
 }
 
 export function ComposerContextChips({
@@ -144,10 +160,14 @@ export function ComposerContextChips({
 					basenameOf(sel.sourcePath) || t("composer.selection"),
 					MAX_CHIP_TITLE_CHARS,
 				);
-				const shortLabel = sel.page ? `${name} · p.${sel.page}` : name;
+				const shortLabel =
+					(sel.page ? `${name} · p.${sel.page}` : null) ??
+					selectionLineChipLabel(t, sel, name) ??
+					name;
 				return (
 					<button
 						key={sel.id}
+						title={[sel.text, sel.comment].filter(Boolean).join("\n\n")}
 						type="button"
 						className={chipShellClass(
 							sel.pinned ? undefined : "border-dashed bg-transparent",
@@ -190,42 +210,6 @@ export function ComposerContextChips({
 					</button>
 				);
 			})}
-		</>
-	);
-}
-
-export function ComposerSkillChips({
-	selectedSkills,
-	onRemoveSkill,
-}: {
-	compact?: boolean;
-	selectedSkills: AgentSkill[];
-	onRemoveSkill: (skillId: string) => void;
-}) {
-	const { t } = useTranslation("agent");
-	if (selectedSkills.length === 0) return null;
-	return (
-		<>
-			{selectedSkills.map((skill) => (
-				<button
-					key={skill.id}
-					type="button"
-					className={chipShellClass()}
-					onClick={() => onRemoveSkill(skill.id)}
-					aria-label={t("composer.removeSkill", {
-						skill: skill.name,
-					})}
-				>
-					<Sparkles
-						className="size-3 shrink-0 text-muted-foreground"
-						aria-hidden
-					/>
-					<ChipExpandTrail
-						label={cleanSkillDisplayName(skill.name)}
-						withRemove
-					/>
-				</button>
-			))}
 		</>
 	);
 }

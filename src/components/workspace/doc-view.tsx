@@ -118,6 +118,8 @@ export type DocViewTextProps = {
 		content: string,
 		lastSaved: string,
 	) => Promise<boolean>;
+	/** ⌘S manual save: flush landed — TeX compiles here, others no-op. */
+	onManualSave: (path: string) => void;
 	onTabPatch: (id: string, patch: Partial<DocTab>) => void;
 };
 
@@ -470,7 +472,9 @@ export const DocView = memo(function DocView({
 						seed={tab.textSeed}
 						path={tab.path}
 						reloadKey={tab.textKey}
+						active={active}
 						onPersist={text.onPersistFile}
+						onManualSave={text.onManualSave}
 						onDirtyChange={(d) => text.onTabPatch(tab.id, { textDirty: d })}
 						className="h-full w-full"
 					/>

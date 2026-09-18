@@ -1,12 +1,24 @@
 import { Compartment, EditorState, type Extension } from "@codemirror/state";
 import { oneDark } from "@codemirror/theme-one-dark";
-import { EditorView } from "@codemirror/view";
+import { EditorView, keymap } from "@codemirror/view";
 import { basicSetup } from "codemirror";
 import { useTheme } from "next-themes";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useTextEditorFontSize } from "@/components/viewer/hooks/use-text-editor-font-size";
+import { AskPopover } from "@/components/viewer/pdf/cards/ask-popover";
+import { SelectionMenu } from "@/components/viewer/pdf/cards/selection-menu";
 import { textLanguageExtensions } from "@/components/viewer/text-editor-language";
+import {
+	type EditorDiagnostic,
+	lintDiagnosticsWatcher,
+	TextEditorLintFooter,
+} from "@/components/viewer/text-editor-lint-footer";
 import { TextEditorToolbar } from "@/components/viewer/text-editor-toolbar";
+import { useTextEditorSelection } from "@/components/viewer/use-text-editor-selection";
+import { basenameOf } from "@/lib/core/path";
+import { registerTextEditorFlusher } from "@/lib/workspace/text-editor-flush";
+import { textLanguageIdForPath } from "@/lib/workspace/viewer";
 
 interface TextEditorProps {
 	seed: string;
@@ -18,6 +30,10 @@ interface TextEditorProps {
 		lastSaved: string,
 	) => Promise<boolean>;
 	onDirtyChange: (dirty: boolean) => void;
+	/** Manual save (⌘S) after the flush landed — TeX compiles here. */
+	onManualSave?: (path: string) => void;
+	/** Whether the owning tab is the active panel — gates the selection toolbar. */
+	active?: boolean;
 	className?: string;
 }
 
@@ -67,6 +83,8 @@ export function TextEditor({
 	reloadKey,
 	onPersist,
 	onDirtyChange,
+	onManualSave,
+	active = true,
 	className,
 }: TextEditorProps) {
 	// Font size managed by hook with process-wide persistence (like PDF paper tone).
@@ -101,9 +119,11 @@ export function TextEditor({
 	const onDirtyChangeRef = useRef(onDirtyChange);
 	onDirtyChangeRef.current = onDirtyChange;
 
-	const flush = useCallback(async () => {
+	// True when disk is current after the flush (nothing pending, or the save
+	// landed); false when the save was refused (conflict guard / write error).
+	const flush = useCallback(async (): Promise<boolean> => {
 		const content = pendingContentRef.current;
-		if (content == null) return;
+		if (content == null) return true;
 		pendingContentRef.current = null;
 		const ok = await onPersist(path, content, lastSavedRef.current);
 		if (ok) {
@@ -111,6 +131,7 @@ export function TextEditor({
 			dirtyRef.current = false;
 			onDirtyChangeRef.current(false);
 		}
+		return ok;
 	}, [onPersist, path]);
 
 	const schedulePersist = useCallback(
@@ -130,6 +151,62 @@ export function TextEditor({
 	const schedulePersistRef = useRef(schedulePersist);
 	schedulePersistRef.current = schedulePersist;
 
+	// Manual save (⌘S / Ctrl+S) rides the CodeMirror keymap (only when the
+	// editor is focused, same as its other bindings): flush immediately,
+	// skipping the debounce, then fire the hook — the TeX path compiles there.
+	// A clean buffer still fires it (explicit rebuild, Overleaf-style); a
+	// refused save (conflict guard) does not — compiling the disk copy would
+	// mislead. Routed through refs since the keymap registers once at mount.
+	const flushRef = useRef(flush);
+	flushRef.current = flush;
+	const onManualSaveRef = useRef(onManualSave);
+	onManualSaveRef.current = onManualSave;
+	const manualSaveKeymap = useMemo(
+		() => [
+			{
+				key: "Mod-s",
+				preventDefault: true,
+				run: () => {
+					void flushRef.current().then((ok) => {
+						if (ok) onManualSaveRef.current?.(pathRef.current);
+					});
+					return true;
+				},
+			},
+		],
+		[],
+	);
+
+	// Selection → floating Quick chat / Add to chat toolbar (same chrome the
+	// PDF surfaces have). The listener extension registers once at mount and
+	// routes through refs inside the hook.
+	const selection = useTextEditorSelection({ viewRef, path, active });
+
+	// Lint diagnostics for the status-bar footer (TeX only — the only mode
+	// with lint sources). The watcher extension registers once at mount and
+	// pushes the merged findings after every lint run.
+	const [diagnostics, setDiagnostics] = useState<EditorDiagnostic[]>([]);
+	const handleDiagnostics = useCallback((next: EditorDiagnostic[]) => {
+		setDiagnostics(next);
+	}, []);
+	const hasLintSources = useMemo(
+		() => textLanguageIdForPath(path) === "tex",
+		[path],
+	);
+	const jumpToDiagnostic = useCallback((diagnostic: EditorDiagnostic) => {
+		const view = viewRef.current;
+		if (!view) return;
+		view.dispatch({
+			selection: { anchor: diagnostic.from, head: diagnostic.to },
+			scrollIntoView: true,
+		});
+		view.focus();
+	}, []);
+
+	// Expose the flush to lib actions: the compile button builds disk bytes,
+	// so it must first land this editor's debounced autosave.
+	useEffect(() => registerTextEditorFlusher(path, flush), [path, flush]);
+
 	// Editor owns its state: mount once, reconfigure language/theme in place.
 	useEffect(() => {
 		const host = hostRef.current;
@@ -138,6 +215,9 @@ export function TextEditor({
 		const extensions: Extension[] = [
 			basicSetup,
 			EditorView.lineWrapping,
+			keymap.of(manualSaveKeymap),
+			selection.selectionListener,
+			lintDiagnosticsWatcher(handleDiagnostics),
 			languageCompartment.current.of(language),
 			themeCompartment.current.of(themeRef.current === "dark" ? oneDark : []),
 			fontSizeCompartment.current.of(
@@ -162,8 +242,10 @@ export function TextEditor({
 			view.destroy();
 			viewRef.current = null;
 		};
-		// Mount-once; seed/path/theme changes are handled by the effects below.
-	}, []);
+		// Mount-once; seed/path/theme changes are handled by the effects below
+		// (`manualSaveKeymap` / `selection.selectionListener` /
+		// `handleDiagnostics` are stable — never re-mount the editor).
+	}, [manualSaveKeymap, selection.selectionListener, handleDiagnostics]);
 
 	// Follow theme switches without rebuilding the editor.
 	useEffect(() => {
@@ -235,13 +317,53 @@ export function TextEditor({
 
 	// An unreadable file still opens an empty buffer — the next autosave
 	// creates/repairs the file on disk.
+	// The selection chrome portals to body so the fixed-position toolbar and
+	// Ask popover escape the panel's overflow/stacking context (same as the
+	// PDF card stack); inactive keep-alive panes render no chrome.
 	return (
-		<div className="group relative h-full w-full overflow-hidden">
+		<div
+			className={`group relative flex h-full w-full flex-col overflow-hidden ${className ?? ""}`}
+		>
 			<TextEditorToolbar fontSize={fontSize} onFontSizeChange={setFontSize} />
-			<div
-				ref={hostRef}
-				className={`h-full w-full overflow-hidden ${className ?? ""}`}
-			/>
+			<div ref={hostRef} className="min-h-0 w-full flex-1 overflow-hidden" />
+			{hasLintSources ? (
+				<TextEditorLintFooter
+					diagnostics={diagnostics}
+					onJump={jumpToDiagnostic}
+				/>
+			) : null}
+			{active
+				? createPortal(
+						<>
+							{selection.menu && !selection.ask ? (
+								<SelectionMenu
+									screen={selection.menu.screen}
+									onHighlight={() => undefined}
+									onAsk={selection.handleAsk}
+									onAddToChat={selection.handleAddToChat}
+									onTranslate={() => undefined}
+									showHighlight={false}
+									showTranslate={false}
+								/>
+							) : null}
+							{selection.ask ? (
+								<AskPopover
+									thread={selection.ask.thread}
+									paperTitle={basenameOf(path)}
+									screen={selection.ask.screen}
+									streaming={selection.streaming}
+									error={selection.askError}
+									onSend={selection.sendAskQuestion}
+									onResend={selection.resendAskQuestion}
+									onHide={selection.hideAsk}
+									onDelete={selection.deleteAsk}
+									onStop={selection.stopAskStreaming}
+								/>
+							) : null}
+						</>,
+						document.body,
+					)
+				: null}
 		</div>
 	);
 }

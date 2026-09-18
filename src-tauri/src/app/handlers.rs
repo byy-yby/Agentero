@@ -117,7 +117,6 @@ macro_rules! common_commands {
             crate::features::paper::catalog::commands::paper_page_counts,
             crate::features::paper::catalog::commands::paper_set_page_counts,
             crate::features::paper::catalog::commands::paper_reading_activity_batch,
-            crate::features::paper::import::commands::paper_backfill_publication,
             crate::features::markdown::search::commands::vault_search,
             crate::core::usage::commands::activity_record_events,
             crate::core::usage::commands::usage_list,
@@ -222,6 +221,9 @@ pub fn attach_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<ta
             crate::features::pdf::export::commands::export_system_cjk_font,
             crate::features::web::commands::web_proxy_allow_host,
             crate::features::compile::detect_latex_engines,
+            crate::features::compile::clean_latex_aux_files,
+            crate::features::compile::chktex_lint,
+            crate::features::compile::root::resolve_latex_root,
             crate::features::jobs::commands::job_latex_compile_enqueue,
         ])
     }
