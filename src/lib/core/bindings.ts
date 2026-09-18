@@ -347,13 +347,6 @@ export const commands = {
 	 */
 	paperReadingActivityBatch: (args: PaperReadingActivityBatchArgs) => __TAURI_INVOKE<ApiResult<{ [key in string]: ReadingActivityPoint[] }>>("paper_reading_activity_batch", { args }),
 	/**
-	 *  Resolve and fill missing `publication` values for papers in the catalog.
-	 *  Uses arXiv journal_ref / S2 `publicationVenue`, then DOI → S2 then Crossref,
-	 *  then title → Semantic Scholar. Crossref is last among identifier sources
-	 *  because its `container-title` truncates many conference proceedings.
-	 */
-	paperBackfillPublication: (args: PaperBackfillPublicationArgs) => typedError<ApiResult<PaperBackfillPublicationResult_Serialize>, string>(__TAURI_INVOKE("paper_backfill_publication", { args })),
-	/**
 	 *  Full-text search over the Vault's Markdown files. See `services::search`.
 	 * 
 	 *  Async + `run_blocking`: the walk reads every Markdown file, which must not
@@ -578,6 +571,36 @@ export const commands = {
 	 *  fails to load.
 	 */
 	webProxyAllowHost: (args: WebProxyAllowHostArgs) => typedError<ApiResult<boolean>, string>(__TAURI_INVOKE("web_proxy_allow_host", { args })),
+	/**
+	 *  Detect available LaTeX engines on the system.
+	 *  Returns the engines that can actually compile — latexmk (the orchestrator)
+	 *  and the engine binary must both exist. Engines not present on the host are
+	 *  omitted (not greyed out); without latexmk the list is empty and the compile
+	 *  button stays hidden.
+	 */
+	detectLatexEngines: () => __TAURI_INVOKE<ApiResult<LatexEngine[]>>("detect_latex_engines"),
+	/**
+	 *  Clean the regenerable LaTeX intermediates for one source (`latexmk -c`):
+	 *  drops `.aux` / `.log` / `.fls` / `.fdb_latexmk` / … while keeping the PDF.
+	 * 
+	 *  This is the escape hatch for latexmk's stuck state after a failed run:
+	 *  its fingerprint database (`*.fdb_latexmk`) records the failure, and with
+	 *  an unchanged source it then refuses to recompile — "Nothing to do …
+	 *  pdflatex gave an error in previous invocation". Clearing the
+	 *  intermediates resets that database so the next compile is a full run.
+	 */
+	cleanLatexAuxFiles: (texPath: string) => __TAURI_INVOKE<ApiResult<null>>("clean_latex_aux_files", { texPath }),
+	/**
+	 *  Lint the in-memory TeX buffer with chktex — the rule set Overleaf and VS
+	 *  Code's LaTeX Workshop run. Content goes in via stdin (`-I0`), so findings
+	 *  track the live editor buffer rather than the last autosaved snapshot, and
+	 *  chktex does not follow `\input`s (every open file lints itself). Returns an
+	 *  empty list when chktex is absent: linting degrades to the language pack's
+	 *  built-in checks instead of erroring on every keystroke.
+	 */
+	chktexLint: (texPath: string, content: string) => __TAURI_INVOKE<ApiResult<LatexLintDiagnostic[]>>("chktex_lint", { texPath, content }),
+	resolveLatexRoot: (texPath: string, vaultPath: string) => __TAURI_INVOKE<ApiResult<LatexRoot>>("resolve_latex_root", { texPath, vaultPath }),
+	jobLatexCompileEnqueue: (args: JobLatexCompileEnqueueArgs) => typedError<ApiResult<JobSnapshot>, string>(__TAURI_INVOKE("job_latex_compile_enqueue", { args })),
 };
 
 /** Events */
@@ -602,6 +625,7 @@ export const events = {
 	agentUsage: makeEvent<AgentUsageEvt>("agent:usage"),
 	bridgeHostStatus: makeEvent<BridgeHostStatusEvent>("bridge:host-status"),
 	bridgePairRequest: makeEvent<BridgePairRequestEvent>("bridge:pair-request"),
+	compileLog: makeEvent<CompileLogEvent>("compile:log"),
 	connectorError: makeEvent<ConnectorErrorEvent>("connector:error"),
 	connectorItemSaved: makeEvent<ConnectorItemSavedEvent>("connector:item-saved"),
 	connectorProgress: makeEvent<ConnectorProgressEvent>("connector:progress"),
@@ -1244,7 +1268,14 @@ export type AgentTemplate = "opencode" |
  *  Moonshot Kimi Code CLI with native ACP (`kimi acp`).
  *  Docs: https://moonshotai.github.io/kimi-code/en/
  */
-"kimi-code" | "custom";
+"kimi-code" | 
+/**
+ *  ZCode CLI via the community `zcode-acp-server` adapter, which bridges the
+ *  headless `zcode app-server --stdio`. Reuses the ZCode desktop app login
+ *  (`~/.zcode`); the adapter auto-discovers the app-bundled CLI.
+ *  Docs: https://github.com/william0wang/zcode-acp
+ */
+"zcode" | "custom";
 
 /**  ACP tool call create/update for UI (`Tool` element). */
 export type AgentToolEvent = AgentToolEvent_Serialize | AgentToolEvent_Deserialize;
@@ -2093,6 +2124,11 @@ export type CommitStatus =
 /**  `{parent}/{id}` already holds a paper (dir + NOTES or catalog row). */
 "skipped";
 
+/**  Mirror of the inline `json!({ "line" })` in `features::compile::compile_tex`. */
+export type CompileLogEvent = {
+	line: string,
+};
+
 /**
  *  Mirror of the inline `json!({ "message", "sessionId" })` in
  *  `integration::connector::state::emit_error`.
@@ -2766,9 +2802,19 @@ export type JobImportEnqueueArgs = {
 	params?: Json | null,
 };
 
-export type JobKind = "parseRefs" | "parseBody" | "layoutAnalyze" | "layoutTranslate" | "downloadAssets" | "pageCount" | "wikiReindex" | "recognizeMetadata" | "import" | "connectorSync" | "modelDownload" | "citingScan" | "libraryIo" | "metadataRefresh";
+export type JobKind = "parseRefs" | "parseBody" | "layoutAnalyze" | "layoutTranslate" | "downloadAssets" | "pageCount" | "wikiReindex" | "recognizeMetadata" | "import" | "connectorSync" | "modelDownload" | "citingScan" | "libraryIo" | "metadataRefresh" | "latexCompile";
 
 export type JobLane = "focus" | "normal" | "idle";
+
+export type JobLatexCompileEnqueueArgs = {
+	vaultPath: string,
+	/**  Absolute, or vault-relative .tex source path. */
+	texPath: string,
+	/**  Engine id from the picker (pdflatex / xelatex / lualatex). */
+	engine: string,
+	lane?: JobLane | null,
+	force?: boolean,
+};
 
 export type JobListArgs = {
 	vaultPath?: string | null,
@@ -2908,6 +2954,47 @@ string |
 Json[] | 
 /**  JSON object. */
 { [key in string]: Json };
+
+/**  A detected LaTeX rendering engine. */
+export type LatexEngine = {
+	id: string,
+	label: string,
+	path: string | null,
+};
+
+/**
+ *  One chktex finding, mapped to editor coordinates (1-based line/column plus
+ *  match length). `code` is chktex's warning number — suppress one inline with
+ *  a `%chktex <n>` comment on the offending line.
+ */
+export type LatexLintDiagnostic = {
+	line: number,
+	column: number,
+	length: number,
+	/**  Mapped chktex kind: "error" | "warning" | "info" (its "Message" level). */
+	severity: string,
+	code: number,
+	message: string,
+};
+
+export type LatexRoot = {
+	rootPath: string,
+	source: LatexRootSource,
+};
+
+/**
+ *  How the compile root was determined — for logs/debugging only; the compile
+ *  pipeline treats every variant identically.
+ */
+export type LatexRootSource = 
+/**  `% !TEX root = …` magic-comment chain (loop detection included). */
+"magicComment" | 
+/**  The file itself carries `\documentclass` / `\begin{document}`. */
+"selfIndicator" | 
+/**  Vault scan found a root whose input/include closure contains the file. */
+"vaultScan" | 
+/**  Nothing found — the file compiles itself. */
+"fallbackSelf";
 
 export type LayoutModelStatus = {
 	ready: boolean,
@@ -3328,28 +3415,6 @@ export type PaperAssetsStatus = {
 	pdf: boolean,
 	tex: boolean,
 	paperMd: boolean,
-};
-
-export type PaperBackfillPublicationArgs = {
-	vaultPath: string,
-	/**  Optional Translator base URL; left empty for direct Crossref/arXiv/S2. */
-	translatorBaseUrl?: string | null,
-};
-
-export type PaperBackfillPublicationResult = PaperBackfillPublicationResult_Serialize | PaperBackfillPublicationResult_Deserialize;
-
-export type PaperBackfillPublicationResult_Deserialize = {
-	total: number,
-	updated: number,
-	failed: number,
-	errors?: string[],
-};
-
-export type PaperBackfillPublicationResult_Serialize = {
-	total: number,
-	updated: number,
-	failed: number,
-	errors?: string[],
 };
 
 /**  Uniform result shape for every entry (camelCase matches the frontend). */
@@ -4339,19 +4404,26 @@ export type StageImportFileResult = {
 };
 
 export type SyncBackendConfig = {
+	/**  Backend discriminator; S3 fields or WebDAV fields apply accordingly. */
+	backend?: SyncBackendKind,
 	/**  S3-compatible endpoint, e.g. `https://<account>.r2.cloudflarestorage.com`. */
-	endpoint: string,
+	endpoint?: string,
 	region?: string,
-	bucket: string,
+	bucket?: string,
 	/**  Optional key prefix inside the bucket (multiple vaults per bucket). */
 	prefix?: string,
-	accessKey: string,
-	secretKey: string,
+	accessKey?: string,
+	secretKey?: string,
 	/**
 	 *  `{endpoint}/{bucket}/key` instead of `{bucket}.{endpoint}/key`.
 	 *  Path style works with R2 / MinIO / AWS alike, so it is the default.
 	 */
 	forcePathStyle?: boolean,
+	/**  WebDAV server directory, e.g. `https://dav.jianguoyun.com/dav/agentero/`. */
+	webdavUrl?: string,
+	webdavUsername?: string,
+	/**  Masked (`*`) on the way to the WebView, like the S3 secret key. */
+	webdavPassword?: string,
 	/**
 	 *  Automatic background sync: once on scheduler start (vault open), after
 	 *  30s of vault quiet, and every `interval_minutes`.
@@ -4359,9 +4431,9 @@ export type SyncBackendConfig = {
 	autoSync?: boolean,
 	intervalMinutes?: number,
 	/**
-	 *  Connection-test probe result: `false` for backends whose PutObject
-	 *  rejects conditional headers (e.g. Aliyun OSS, 400 NotImplemented).
-	 *  Sync then degrades to plain PUTs; the runtime fallback re-detects.
+	 *  Connection-test probe result: `false` for backends whose PUT rejects
+	 *  or ignores conditional headers (e.g. Aliyun OSS 400 NotImplemented,
+	 *  most WebDAV servers). Sync then degrades to plain PUTs.
 	 */
 	conditionalWrites?: boolean,
 	/**
@@ -4370,6 +4442,12 @@ export type SyncBackendConfig = {
 	 */
 	scope?: SyncScope,
 };
+
+/**
+ *  Which remote storage backend a vault syncs through. Legacy `sync.json`
+ *  entries without the field deserialize as [`SyncBackendKind::S3`].
+ */
+export type SyncBackendKind = "s3" | "webdav";
 
 export type SyncConfigureArgs = {
 	vaultPath: string,

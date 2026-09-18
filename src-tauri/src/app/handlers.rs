@@ -33,7 +33,6 @@ macro_rules! common_commands {
             crate::features::agent::commands::doctor_check_host,
             crate::features::agent::commands::doctor_install_node,
             crate::features::agent::commands::doctor_check_agents,
-            crate::features::agent::commands::doctor_open_agent_login_terminal,
             crate::features::system::network::commands::doctor_check_network,
             crate::features::agent::commands::agent_cancel_run,
             crate::features::jobs::commands::job_parse_refs_enqueue,
@@ -118,7 +117,6 @@ macro_rules! common_commands {
             crate::features::paper::catalog::commands::paper_page_counts,
             crate::features::paper::catalog::commands::paper_set_page_counts,
             crate::features::paper::catalog::commands::paper_reading_activity_batch,
-            crate::features::paper::import::commands::paper_backfill_publication,
             crate::features::markdown::search::commands::vault_search,
             crate::core::usage::commands::activity_record_events,
             crate::core::usage::commands::usage_list,
@@ -163,6 +161,7 @@ pub fn attach_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<ta
             crate::features::agent::commands::agent_list_sessions,
             crate::features::agent::commands::agent_load_session,
             crate::features::agent::commands::agent_warm,
+            crate::features::agent::commands::doctor_open_agent_login_terminal,
             crate::integration::remote::commands::remote_connect,
             crate::integration::remote::commands::remote_ssh_config_hosts,
             crate::integration::remote::commands::remote_disconnect,
@@ -222,7 +221,10 @@ pub fn attach_handlers(builder: tauri::Builder<tauri::Wry>) -> tauri::Builder<ta
             crate::features::pdf::export::commands::export_system_cjk_font,
             crate::features::web::commands::web_proxy_allow_host,
             crate::features::compile::detect_latex_engines,
-            crate::features::compile::compile_tex,
+            crate::features::compile::clean_latex_aux_files,
+            crate::features::compile::chktex_lint,
+            crate::features::compile::root::resolve_latex_root,
+            crate::features::jobs::commands::job_latex_compile_enqueue,
         ])
     }
     #[cfg(target_os = "ios")]

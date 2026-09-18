@@ -1,8 +1,25 @@
+//! LaTeX compilation: engine detection plus the `LatexCompile` job runner
+//! (latexmk orchestration with live log streaming, progress and cancel).
+
+pub mod root;
+
+use serde::Deserialize;
 use serde::Serialize;
-use std::path::{Path, PathBuf};
+use std::path::Path;
+use std::path::PathBuf;
+use std::sync::Arc;
 use tauri::Emitter;
+use tokio::io::AsyncBufReadExt;
+use tokio::io::AsyncWriteExt;
+use tokio::io::BufReader;
 
 use crate::core::error::ApiResult;
+use crate::core::error::AppError;
+use crate::features::jobs::emit_job_changed;
+use crate::features::jobs::JobCenter;
+use crate::features::jobs::JobKind;
+use crate::features::jobs::RunOutcome;
+use crate::features::jobs::StartedJob;
 
 /// A detected LaTeX rendering engine.
 #[derive(Debug, Clone, Serialize, specta::Type)]
@@ -61,204 +78,570 @@ fn resolve_engine(command: &str) -> Option<PathBuf> {
     None
 }
 
+/// The engine picker: latexmk orchestrates every engine (bibtex/biber and the
+/// rerun loop run automatically), so the entries are the latexmk flags.
+const LATEX_ENGINES: [(&str, &str); 3] = [
+    ("pdflatex", "PDFLaTeX"),
+    ("xelatex", "XeLaTeX"),
+    ("lualatex", "LuaLaTeX"),
+];
+
+fn latexmk_engine_flag(engine: &str) -> Option<&'static str> {
+    match engine {
+        "pdflatex" => Some("-pdf"),
+        "xelatex" => Some("-xelatex"),
+        "lualatex" => Some("-lualatex"),
+        _ => None,
+    }
+}
+
 /// Detect available LaTeX engines on the system.
-/// Returns engines whose binaries actually exist on disk, ordered by common
-/// preference. Engines not present on the host are omitted (not greyed out).
+/// Returns the engines that can actually compile — latexmk (the orchestrator)
+/// and the engine binary must both exist. Engines not present on the host are
+/// omitted (not greyed out); without latexmk the list is empty and the compile
+/// button stays hidden.
 #[tauri::command]
 #[specta::specta]
 pub async fn detect_latex_engines() -> ApiResult<Vec<LatexEngine>> {
-    let candidates = [
-        ("pdflatex", "PDFLaTeX"),
-        ("xelatex", "XeLaTeX"),
-        ("lualatex", "LuaLaTeX"),
-        ("latexmk", "latexmk"),
-        ("tectonic", "Tectonic"),
-    ];
+    // latexmk drives the whole build (engine, bibtex, reruns); without it
+    // there is nothing to offer.
+    let Some(latexmk) = resolve_engine("latexmk") else {
+        return ApiResult::ok(Vec::new());
+    };
 
-    let mut engines = Vec::new();
-
-    for (id, label) in candidates {
-        if let Some(path) = resolve_engine(id) {
-            engines.push(LatexEngine {
-                id: id.to_string(),
-                label: label.to_string(),
-                path: Some(path.to_string_lossy().to_string()),
-            });
-        }
-    }
+    let engines = LATEX_ENGINES
+        .iter()
+        .filter(|(engine, _)| resolve_engine(engine).is_some())
+        .map(|(engine, label)| LatexEngine {
+            id: (*engine).to_string(),
+            label: (*label).to_string(),
+            path: Some(latexmk.to_string_lossy().to_string()),
+        })
+        .collect::<Vec<_>>();
 
     log::debug!("detected LaTeX engines: {:?}", engines);
     ApiResult::ok(engines)
 }
 
-/// Result of a TeX compilation.
-#[derive(Debug, Serialize, specta::Type)]
-#[serde(rename_all = "camelCase")]
-pub struct CompileResult {
-    /// True iff a PDF was produced on disk. LaTeX engines often emit a partial
-    /// PDF even when they report errors (undefined refs, missing files, …), so
-    /// the caller should treat this as "open the PDF" rather than "success".
-    pub ok: bool,
-    /// Path to the produced PDF when one exists, even if the engine reported
-    /// errors. `None` only when the engine could not produce a PDF at all.
-    pub pdf_path: Option<String>,
-    /// True when the LaTeX engine exited with a non-zero status. The PDF (if
-    /// any) is still useful — the caller may surface this as a soft warning.
-    pub engine_error: bool,
-    pub log: String,
-}
-
-/// Compile a .tex file to PDF using the specified engine.
+/// Clean the regenerable LaTeX intermediates for one source (`latexmk -c`):
+/// drops `.aux` / `.log` / `.fls` / `.fdb_latexmk` / … while keeping the PDF.
+///
+/// This is the escape hatch for latexmk's stuck state after a failed run:
+/// its fingerprint database (`*.fdb_latexmk`) records the failure, and with
+/// an unchanged source it then refuses to recompile — "Nothing to do …
+/// pdflatex gave an error in previous invocation". Clearing the
+/// intermediates resets that database so the next compile is a full run.
 #[tauri::command]
 #[specta::specta]
-pub async fn compile_tex(
-    tex_path: String,
-    engine: String,
-    app_handle: tauri::AppHandle,
-) -> ApiResult<CompileResult> {
-    let tex_path = Path::new(&tex_path);
-    if !tex_path.exists() {
-        return ApiResult::err(crate::core::error::AppError::message(format!(
+pub async fn clean_latex_aux_files(tex_path: String) -> ApiResult<()> {
+    let tex_path = PathBuf::from(&tex_path);
+    if !tex_path.is_file() {
+        return ApiResult::err(AppError::message(format!(
             "tex file not found: {}",
             tex_path.display()
         )));
     }
-
-    let cwd = match tex_path.parent() {
-        Some(p) => p,
-        None => {
-            return ApiResult::err(crate::core::error::AppError::message(
-                "cannot determine parent directory",
-            ))
-        }
+    let Some(cwd) = tex_path.parent().map(Path::to_path_buf) else {
+        return ApiResult::err(AppError::message("cannot determine parent directory"));
     };
-    let basename = match tex_path.file_name().and_then(|n| n.to_str()) {
-        Some(n) => n,
-        None => {
-            return ApiResult::err(crate::core::error::AppError::message(
-                "invalid tex file name",
-            ))
-        }
+    let Some(basename) = tex_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+    else {
+        return ApiResult::err(AppError::message("invalid tex file name"));
+    };
+    // GUI apps inherit launchd's minimal PATH — resolve latexmk the same way
+    // the compile runner does and spawn the absolute path.
+    let Some(latexmk) = resolve_engine("latexmk") else {
+        return ApiResult::err(AppError::message("latexmk not found on this system"));
     };
 
-    let pdf_basename = tex_path
-        .file_stem()
-        .and_then(|s| s.to_str())
-        .unwrap_or("output");
-    let pdf_path = cwd.join(format!("{}.pdf", pdf_basename));
+    log::info!(
+        "cleaning latex aux files for {} in {}",
+        basename,
+        cwd.display()
+    );
+
+    let mut cmd = tokio::process::Command::new(&latexmk);
+    cmd.current_dir(&cwd)
+        .arg("-c")
+        .arg(format!("-outdir={}", cwd.to_string_lossy()))
+        .arg(&basename)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    if let Some(bin_dir) = latexmk.parent() {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let mut path_env = std::ffi::OsString::from(bin_dir);
+        path_env.push(":");
+        path_env.push(inherited);
+        cmd.env("PATH", path_env);
+    }
+
+    let output = match cmd.output().await {
+        Ok(output) => output,
+        Err(e) => return ApiResult::err(AppError::message(format!("failed to run latexmk: {e}"))),
+    };
+    if output.status.success() {
+        return ApiResult::ok(());
+    }
+    // Prefer stderr for the failure message; latexmk -c reports its errors
+    // there, falling back to whatever stdout captured.
+    let mut tail = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    if tail.is_empty() {
+        tail = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    }
+    let tail = if tail.len() > 2000 {
+        format!("{}…", tail[tail.len() - 2000..].trim_start())
+    } else {
+        tail
+    };
+    ApiResult::err(AppError::message(if tail.is_empty() {
+        format!("latexmk clean exited with {}", output.status)
+    } else {
+        tail
+    }))
+}
+
+/// One chktex finding, mapped to editor coordinates (1-based line/column plus
+/// match length). `code` is chktex's warning number — suppress one inline with
+/// a `%chktex <n>` comment on the offending line.
+#[derive(Debug, Clone, Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub struct LatexLintDiagnostic {
+    pub line: u32,
+    pub column: u32,
+    pub length: u32,
+    /// Mapped chktex kind: "error" | "warning" | "info" (its "Message" level).
+    pub severity: String,
+    pub code: u32,
+    pub message: String,
+}
+
+/// Parse chktex output produced with `-f"%l:%c:%d:%k:%n:%m\n"` (the format
+/// string must carry a real newline — chktex does not interpret `\n`).
+/// Unparseable lines (banner, summary, stray output) are skipped.
+fn parse_chktex_output(stdout: &str) -> Vec<LatexLintDiagnostic> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.splitn(6, ':');
+            let line_no = fields.next()?.parse::<u32>().ok()?;
+            let column = fields.next()?.parse::<u32>().ok()?;
+            let length = fields.next()?.parse::<u32>().ok()?;
+            let severity = match fields.next()? {
+                "Error" => "error",
+                "Warning" => "warning",
+                "Message" => "info",
+                _ => return None,
+            };
+            let code = fields.next()?.parse::<u32>().ok()?;
+            let message = fields.next()?.trim();
+            if message.is_empty() {
+                return None;
+            }
+            Some(LatexLintDiagnostic {
+                line: line_no,
+                column,
+                length,
+                severity: severity.to_string(),
+                code,
+                message: message.to_string(),
+            })
+        })
+        .collect()
+}
+
+/// Lint the in-memory TeX buffer with chktex — the rule set Overleaf and VS
+/// Code's LaTeX Workshop run. Content goes in via stdin (`-I0`), so findings
+/// track the live editor buffer rather than the last autosaved snapshot, and
+/// chktex does not follow `\input`s (every open file lints itself). Returns an
+/// empty list when chktex is absent: linting degrades to the language pack's
+/// built-in checks instead of erroring on every keystroke.
+#[tauri::command]
+#[specta::specta]
+pub async fn chktex_lint(tex_path: String, content: String) -> ApiResult<Vec<LatexLintDiagnostic>> {
+    let Some(chktex) = resolve_engine("chktex") else {
+        return ApiResult::ok(Vec::new());
+    };
+    let mut cmd = tokio::process::Command::new(&chktex);
+    cmd.args(["-q", "-I0", "-f%l:%c:%d:%k:%n:%m\n"])
+        // cwd = the .tex parent so a project-local .chktexrc keeps working.
+        .current_dir(Path::new(&tex_path).parent().unwrap_or(Path::new(".")))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        // The version banner and the run summary go to stderr; drop them.
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true);
+    // Same GUI-PATH fix as latexmk: prepend chktex's own bin dir (TeX Live
+    // keeps kpsewhich etc. next to it, which chktex uses to find its rc file).
+    if let Some(bin_dir) = chktex.parent() {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let mut path_env = std::ffi::OsString::from(bin_dir);
+        path_env.push(":");
+        path_env.push(inherited);
+        cmd.env("PATH", path_env);
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => return ApiResult::err(AppError::message(format!("failed to run chktex: {e}"))),
+    };
+    // Feed the buffer and close stdin (EOF) from a side task so a large
+    // document cannot deadlock against stdout being drained.
+    if let Some(mut stdin) = child.stdin.take() {
+        tokio::spawn(async move {
+            let _ = stdin.write_all(content.as_bytes()).await;
+        });
+    }
+    // The exit status is meaningless for linting (2 merely means "warnings
+    // found") — parsed stdout is the source of truth.
+    let output =
+        match tokio::time::timeout(std::time::Duration::from_secs(15), child.wait_with_output())
+            .await
+        {
+            Err(_) => return ApiResult::err(AppError::message("chktex timed out")),
+            Ok(Err(e)) => return ApiResult::err(AppError::message(format!("chktex failed: {e}"))),
+            Ok(Ok(output)) => output,
+        };
+
+    ApiResult::ok(parse_chktex_output(&String::from_utf8_lossy(
+        &output.stdout,
+    )))
+}
+
+/// `params` payload of a `LatexCompile` job.
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LatexCompileParams {
+    tex_path: String,
+    engine: String,
+}
+
+/// Register the `LatexCompile` runner with the JobCenter (app assembly).
+pub fn register_job_runners(center: &JobCenter) {
+    center.register_runner(JobKind::LatexCompile, Arc::new(latex_compile_runner));
+}
+
+/// Runner for [`JobKind::LatexCompile`]: run latexmk on the .tex source and
+/// stream its output live. Milestone lines (rule / run-number banners) become
+/// `job:changed` progress so the background-tasks row advances; every line is
+/// also emitted on `compile:log` for a future log view.
+fn latex_compile_runner(
+    center: JobCenter,
+    app: tauri::AppHandle,
+    started: StartedJob,
+) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+    center.run_job(app, started, |center, app, started| async move {
+        let params = started
+            .snapshot
+            .params
+            .clone()
+            .and_then(|value| serde_json::from_value::<LatexCompileParams>(value).ok());
+        let Some(params) = params else {
+            return RunOutcome::Failed(Some("latex compile job is missing its params".into()));
+        };
+        run_latexmk(&center, &app, &started, params).await
+    })
+}
+
+/// Monotonic progress filter: milestones only surface when they move the bar
+/// or rename the phase, so `job:changed` stays quiet on ordinary log lines.
+#[derive(Default)]
+struct CompileProgress {
+    max: f32,
+}
+
+impl CompileProgress {
+    fn advance(&mut self, progress: f32, phase: String) -> Option<(f32, String)> {
+        if progress <= self.max {
+            return None;
+        }
+        self.max = progress;
+        Some((self.max, phase))
+    }
+}
+
+/// Map a latexmk banner line to a (progress, phase) milestone, if it is one.
+/// Engine runs advance 0.35 → 0.85; bibliography rules sit at 0.5; the
+/// terminal 100 is set by `run_job` on success.
+fn line_milestone(line: &str) -> Option<(f32, String)> {
+    if let Some(rest) = line.strip_prefix("Run number ") {
+        // "Run number 2 of rule 'pdflatex'"
+        let mut parts = rest.splitn(2, " of rule '");
+        let runs: u32 = parts.next()?.trim().parse().ok()?;
+        let rule = parts.next()?.trim_end_matches('\'');
+        let progress = (0.1 + 0.25 * runs as f32).min(0.85);
+        return Some((progress, format!("{rule} · run {runs}")));
+    }
+    if let Some(rest) = line.strip_prefix("Latexmk: applying rule '") {
+        let rule = rest.trim_end_matches("'...");
+        let progress = match rule {
+            "bibtex" | "biber" | "makeindex" => 0.5,
+            _ => 0.15,
+        };
+        return Some((progress, rule.to_string()));
+    }
+    None
+}
+
+/// Last few output lines, kept to build a useful failure message (LaTeX errors
+/// start with `! `; those win over the plain tail).
+const ERROR_TAIL_LINES: usize = 24;
+
+/// Pump a child pipe into the shared line stream until it ends.
+async fn forward_lines<S>(stream: S, tx: tokio::sync::mpsc::UnboundedSender<String>)
+where
+    S: tokio::io::AsyncRead + Unpin,
+{
+    let mut lines = BufReader::new(stream).lines();
+    while let Ok(Some(line)) = lines.next_line().await {
+        if tx.send(line).is_err() {
+            break;
+        }
+    }
+}
+
+async fn run_latexmk(
+    center: &JobCenter,
+    app: &tauri::AppHandle,
+    started: &StartedJob,
+    params: LatexCompileParams,
+) -> RunOutcome {
+    let tex_path = PathBuf::from(&params.tex_path);
+    if !tex_path.is_file() {
+        return RunOutcome::Failed(Some(format!("tex file not found: {}", tex_path.display())));
+    }
+    let Some(cwd) = tex_path.parent().map(Path::to_path_buf) else {
+        return RunOutcome::Failed(Some("cannot determine parent directory".into()));
+    };
+    let Some(basename) = tex_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(str::to_string)
+    else {
+        return RunOutcome::Failed(Some("invalid tex file name".into()));
+    };
 
     log::info!(
         "compiling tex: {} with engine {} in {}",
         basename,
-        engine,
+        params.engine,
         cwd.display()
     );
 
-    // Force a clean rebuild by removing any pre-existing PDF (and a few
-    // LaTeX intermediates whose stale state can suppress a re-run). The TeX
-    // engines refuse to compile when the existing PDF is newer than the
-    // `.tex` source, which silently returns the first compile's output on
-    // every subsequent Compile click — the opposite of what the button
-    // promises. Removing the PDF guarantees a fresh run.
-    for ext in [
-        "pdf",
-        "aux",
-        "log",
-        "out",
-        "toc",
-        "fls",
-        "synctex.gz",
-        "bbl",
-    ] {
-        let candidate = cwd.join(format!("{}.{}", pdf_basename, ext));
-        if candidate.exists() {
-            if let Err(e) = std::fs::remove_file(&candidate) {
-                log::warn!("failed to remove stale {}: {}", candidate.display(), e);
+    let Some(engine_flag) = latexmk_engine_flag(&params.engine) else {
+        return RunOutcome::Failed(Some(format!("unknown latex engine: {}", params.engine)));
+    };
+    // GUI apps inherit launchd's minimal PATH (no /Library/TeX/texbin), so a
+    // bare latexmk would fail to spawn even though detection found it. Resolve
+    // the same way detect_latex_engines does and spawn the absolute path.
+    let Some(latexmk) = resolve_engine("latexmk") else {
+        return RunOutcome::Failed(Some("latexmk not found on this system".into()));
+    };
+
+    let mut cmd = tokio::process::Command::new(&latexmk);
+    cmd.current_dir(&cwd)
+        .arg(engine_flag)
+        .arg("-interaction=nonstopmode")
+        .arg("-halt-on-error")
+        // Manual triggers mean "rebuild now": -g skips latexmk's up-to-date
+        // check. Without it, a failed run followed by an unchanged source
+        // leaves latexmk reporting "Nothing to do" plus the previous error
+        // summary without ever rerunning pdflatex.
+        .arg("-g")
+        .arg(format!("-outdir={}", cwd.to_string_lossy()))
+        .arg(&basename)
+        .kill_on_drop(true)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    // latexmk locates the engine and bibtex via the child $PATH, which under a
+    // GUI app is launchd's minimal one. Put latexmk's own bin dir (TeX Live
+    // keeps every engine there) in front of the inherited PATH.
+    if let Some(bin_dir) = latexmk.parent() {
+        let inherited = std::env::var_os("PATH").unwrap_or_default();
+        let mut path_env = std::ffi::OsString::from(bin_dir);
+        path_env.push(":");
+        path_env.push(inherited);
+        cmd.env("PATH", path_env);
+    }
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            return RunOutcome::Failed(Some(format!("failed to run {}: {}", params.engine, e)))
+        }
+    };
+
+    // Drain stdout and stderr concurrently into one line stream so neither
+    // pipe can wedge the child while the main loop consumes lines.
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    if let Some(stdout) = child.stdout.take() {
+        let tx = tx.clone();
+        tokio::spawn(forward_lines(stdout, tx));
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let tx = tx.clone();
+        tokio::spawn(forward_lines(stderr, tx));
+    }
+    drop(tx);
+
+    let job_id = started.snapshot.id.clone();
+    let cancel_token = started.cancel_token.clone();
+    let mut progress = CompileProgress::default();
+    let mut tail: Vec<String> = Vec::new();
+    let mut cancelled = false;
+
+    loop {
+        tokio::select! {
+            biased;
+            _ = cancel_token.cancelled() => {
+                cancelled = true;
+                break;
+            }
+            line = rx.recv() => {
+                let Some(line) = line else { break };
+                let _ = app.emit("compile:log", serde_json::json!({ "line": line }));
+                if tail.len() == ERROR_TAIL_LINES {
+                    tail.remove(0);
+                }
+                tail.push(line.clone());
+                if let Some((progress_value, phase)) = line_milestone(&line)
+                    .and_then(|(p, phase)| progress.advance(p, phase))
+                {
+                    if let Some(snapshot) = center
+                        .job_report(&job_id, Some(progress_value), Some(phase), None, None)
+                        .await
+                    {
+                        emit_job_changed(app, snapshot);
+                    }
+                }
             }
         }
     }
 
-    // Belt and suspenders: bump the .tex mtime so engines that compare
-    // timestamps (e.g. some latexmk modes) re-run even if they ignored our
-    // PDF deletion (e.g. permission failure).
-    let now = std::time::SystemTime::now();
-    let _ = std::fs::File::options()
-        .write(true)
-        .open(tex_path)
-        .and_then(|f| f.set_modified(now));
-
-    let mut cmd = tokio::process::Command::new(&engine);
-    cmd.current_dir(cwd);
-
-    match engine.as_str() {
-        "tectonic" => {
-            cmd.arg(basename);
-            cmd.arg("--outdir");
-            cmd.arg(cwd.to_string_lossy().as_ref());
-            cmd.arg("--keep-intermediates");
-        }
-        _ => {
-            cmd.arg("-interaction=nonstopmode");
-            cmd.arg("-halt-on-error");
-            cmd.arg(format!("-output-directory={}", cwd.to_string_lossy()));
-            cmd.arg(basename);
-        }
+    if cancelled {
+        let _ = child.kill().await;
+        return RunOutcome::Cancelled;
     }
 
-    let output = match cmd.output().await {
-        Ok(o) => o,
-        Err(e) => {
-            return ApiResult::err(crate::core::error::AppError::message(format!(
-                "failed to run {}: {}",
-                engine, e
-            )))
-        }
+    let status = match child.wait().await {
+        Ok(status) => status,
+        Err(e) => return RunOutcome::Failed(Some(format!("failed to run latexmk: {e}"))),
     };
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    let combined_log = format!("{}\n{}", stdout, stderr);
+    let pdf_path = tex_path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(|stem| cwd.join(format!("{stem}.pdf")))
+        .unwrap_or_else(|| cwd.join("output.pdf"));
 
-    for line in combined_log.lines() {
-        let _ = app_handle.emit("compile:log", serde_json::json!({ "line": line }));
+    if status.success() && pdf_path.exists() {
+        return RunOutcome::Succeeded;
     }
 
-    // Whether the LaTeX engine itself succeeded (exit 0). The PDF can still
-    // exist when the engine reports errors, so callers should treat
-    // `pdf_path.exists()` as the source of truth for "do I have a PDF to show".
-    let engine_error = !output.status.success();
-    let pdf_exists = pdf_path.exists();
-
-    log::info!(
-        "compile result: tex={} cwd={} pdf_path={} pdf_exists={} engine_error={} exit={:?}",
+    log::warn!(
+        "compile failed for {}: exit={:?}",
         tex_path.display(),
-        cwd.display(),
-        pdf_path.display(),
-        pdf_exists,
-        engine_error,
-        output.status
+        status.code()
     );
-    let ok = pdf_exists;
+    let errors: Vec<String> = tail
+        .iter()
+        .filter(|l| l.starts_with('!'))
+        .cloned()
+        .collect();
+    let detail = if errors.is_empty() {
+        tail.join("\n")
+    } else {
+        errors.join("\n")
+    };
+    let detail = if detail.len() > 2000 {
+        format!("{}…", detail[detail.len() - 2000..].trim_start())
+    } else if detail.is_empty() {
+        format!("latexmk exited with {status}")
+    } else {
+        detail
+    };
+    RunOutcome::Failed(Some(detail))
+}
 
-    if engine_error {
-        log::warn!(
-            "compile reported errors for {}: exit={:?} (pdf_exists={})",
-            tex_path.display(),
-            output.status,
-            pdf_exists
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn maps_run_number_banners_to_monotonic_milestones() {
+        let mut progress = CompileProgress::default();
+        let first = line_milestone("Run number 1 of rule 'pdflatex'").unwrap();
+        assert_eq!(first, (0.35, "pdflatex · run 1".to_string()));
+        assert_eq!(
+            progress.advance(first.0, first.1.clone()),
+            Some(first.clone())
         );
+
+        // Same run again (rerun banner) must not move the bar.
+        assert_eq!(progress.advance(first.0, first.1), None);
+
+        let second = line_milestone("Run number 2 of rule 'pdflatex'").unwrap();
+        assert_eq!(second.0, 0.6);
+        assert_eq!(
+            progress.advance(second.0, second.1.clone()),
+            Some(second.clone())
+        );
+        // Bibliography rules sit below engine run 2 — monotonic filter drops them.
+        let bib = line_milestone("Latexmk: applying rule 'bibtex'...").unwrap();
+        assert_eq!(bib, (0.5, "bibtex".to_string()));
+        assert_eq!(progress.advance(bib.0, bib.1), None);
     }
 
-    ApiResult::ok(CompileResult {
-        ok,
-        // Always surface the PDF path when one exists, even on engine error —
-        // a partial PDF is still useful for the user to inspect.
-        pdf_path: if pdf_exists {
-            Some(pdf_path.to_string_lossy().to_string())
-        } else {
-            None
-        },
-        engine_error,
-        log: combined_log,
-    })
+    #[test]
+    fn caps_engine_run_progress_below_terminal() {
+        let (progress, phase) = line_milestone("Run number 9 of rule 'lualatex'").unwrap();
+        assert_eq!(progress, 0.85);
+        assert_eq!(phase, "lualatex · run 9");
+    }
+
+    #[test]
+    fn ordinary_log_lines_are_not_milestones() {
+        assert!(line_milestone("This is pdfTeX, Version 3.141592653").is_none());
+        assert!(line_milestone("[1] [2] [3]").is_none());
+        assert!(line_milestone("Latexmk: All targets () are up-to-date").is_none());
+    }
+
+    #[test]
+    fn parses_chktex_machine_output() {
+        // Real output shape captured from chktex 1.7.9 with
+        // `-f'%l:%c:%d:%k:%n:%m\n'` (real newline in the format string).
+        let stdout = concat!(
+            "1:15:3:Warning:11:You should use \\ldots to achieve an ellipsis.\n",
+            "2:16:2:Warning:8:Wrong length of dash may have been used.\n",
+            "3:1:1:Warning:2:Non-breaking space (`~') should have been used.\n",
+        );
+        let found = parse_chktex_output(stdout);
+        assert_eq!(found.len(), 3);
+        assert_eq!(
+            (found[0].line, found[0].column, found[0].length),
+            (1, 15, 3)
+        );
+        assert_eq!(found[0].severity, "warning");
+        assert_eq!(found[0].code, 11);
+        assert_eq!(found[2].line, 3);
+    }
+
+    #[test]
+    fn keeps_colons_inside_chktex_messages_and_skips_junk() {
+        let stdout = concat!(
+            "ChkTeX v1.7.9 - Copyright 1995-96 Jens T. Berger Thielemann.\n",
+            "\n",
+            "1:1:1:Message:44:note: with: colons\n",
+            "3:1:1:Error:1:boom\n",
+            "not:enough:fields\n",
+        );
+        let found = parse_chktex_output(stdout);
+        assert_eq!(found.len(), 2);
+        assert_eq!(found[0].message, "note: with: colons");
+        assert_eq!(found[0].severity, "info");
+        assert_eq!(found[1].severity, "error");
+    }
 }

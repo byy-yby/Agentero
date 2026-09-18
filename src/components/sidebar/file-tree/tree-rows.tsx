@@ -1,6 +1,9 @@
 import {
+	Check,
+	ChevronDown,
 	ChevronRight,
 	Download,
+	Eraser,
 	Globe,
 	Library,
 	Loader2,
@@ -8,6 +11,7 @@ import {
 	Trash2,
 	Zap,
 } from "lucide-react";
+import { useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
 	FileTreeActions,
@@ -21,6 +25,11 @@ import {
 import { PLAZA_SOURCE_ICONS } from "@/components/plaza/source-icons";
 import { Button } from "@/components/ui/button";
 import { MathText } from "@/components/ui/math-text";
+import {
+	Popover,
+	PopoverContent,
+	PopoverTrigger,
+} from "@/components/ui/popover";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
 	Tooltip,
@@ -29,13 +38,15 @@ import {
 } from "@/components/ui/tooltip";
 import { contextPathIcon } from "@/lib/agent/context-path-icon";
 import { cn } from "@/lib/core/utils";
-import { LIBRARY_VIRTUAL_PATH, TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
+import { isPapersRoot } from "@/lib/paper";
+import { TRASH_VIRTUAL_PATH } from "@/lib/paper/api";
 import {
 	PLAZA_VIRTUAL_PATH,
 	type PlazaSource,
 	plazaSourceLabel,
 } from "@/lib/plaza";
 import type { FileNode } from "@/lib/vault";
+import type { TexCompileActions as TexCompileHookActions } from "./hooks/use-tex-compile";
 import { DOWNLOAD_REASON_KEYS } from "./tree-helpers";
 
 type PaperTreeRowProps = {
@@ -213,6 +224,8 @@ type NodeTreeRowProps = {
 	isCut: boolean;
 	pendingLoad: boolean;
 	expanded: boolean;
+	texCompile?: TexCompileHookActions;
+	vaultPath?: string | null;
 };
 
 export function NodeTreeRow({
@@ -220,17 +233,31 @@ export function NodeTreeRow({
 	isCut,
 	pendingLoad,
 	expanded,
+	texCompile,
+	vaultPath,
 }: NodeTreeRowProps) {
+	const { t } = useTranslation("sidebar");
 	if (node.kind === "directory") {
+		// `papers/` doubles as the library entry: library icon + title.
+		const isLibraryRoot = isPapersRoot(node.path);
 		return (
 			<div
 				className={cn(
 					"relative flex w-full items-center",
 					isCut && "opacity-50",
 				)}
+				{...(isLibraryRoot ? { "data-library-row": "" } : {})}
 			>
 				<div className="min-w-0 flex-1">
-					<FileTreeFolderRow path={node.path} name={node.name} />
+					<FileTreeFolderRow
+						path={node.path}
+						name={isLibraryRoot ? t("papersLibrary.title") : node.name}
+						icon={
+							isLibraryRoot ? (
+								<Library className="size-4 text-muted-foreground" />
+							) : undefined
+						}
+					/>
 				</div>
 				{pendingLoad && expanded ? (
 					<Loader2
@@ -241,80 +268,197 @@ export function NodeTreeRow({
 			</div>
 		);
 	}
+
 	const Icon = contextPathIcon(node.name);
+	const isTex = texCompile?.isTexFile(node.path) ?? false;
+	const isCompiling = texCompile?.compilingPath === node.path;
+
 	return (
 		<FileTreeFile
 			path={node.path}
 			name={node.name}
-			icon={<Icon className="size-4 text-muted-foreground" />}
 			className={cn(isCut && "opacity-50")}
-		/>
+		>
+			<FileTreeIcon>
+				<Icon className="size-4 text-muted-foreground" />
+			</FileTreeIcon>
+			<FileTreeName className="min-w-0 flex-1 truncate" title={node.name}>
+				{node.name}
+			</FileTreeName>
+			{isTex && texCompile ? (
+				<TexCompileActions
+					actions={texCompile}
+					texPath={node.path}
+					vaultPath={vaultPath ?? null}
+					isCompiling={isCompiling}
+				/>
+			) : null}
+		</FileTreeFile>
 	);
 }
 
-type LibraryRowProps = {
-	showDownload: boolean;
-	busy: boolean;
-	downloadingAll: boolean;
-	onDownloadAll: () => void;
-};
-
-export function LibraryRow({
-	showDownload,
-	busy,
-	downloadingAll,
-	onDownloadAll,
-}: LibraryRowProps) {
+/** Renders the compile button + engine selector for a .tex file row. */
+function TexCompileActions({
+	actions,
+	texPath,
+	vaultPath,
+	isCompiling,
+}: {
+	actions: TexCompileHookActions;
+	texPath: string;
+	vaultPath: string | null;
+	isCompiling: boolean;
+}) {
 	const { t } = useTranslation("sidebar");
+	const [pickerOpen, setPickerOpen] = useState(false);
+	const hasEngines = !actions.enginesLoading && actions.engines.length > 0;
+
+	if (isCompiling) {
+		return (
+			<FileTreeActions
+				className="shrink-0"
+				onClick={(e) => e.stopPropagation()}
+				onKeyDown={(e) => e.stopPropagation()}
+			>
+				<Loader2
+					className="size-3.5 animate-spin text-muted-foreground"
+					aria-label={t("fileTree.compileTex")}
+				/>
+			</FileTreeActions>
+		);
+	}
+
+	const runCompile = (e: React.MouseEvent) => {
+		e.stopPropagation();
+		if (vaultPath && hasEngines) {
+			void actions.compileTex(texPath, vaultPath);
+		}
+	};
+
 	return (
-		<FileTreeFile
-			path={LIBRARY_VIRTUAL_PATH}
-			name={t("papersLibrary.title")}
-			data-library-row
+		<FileTreeActions
+			className="shrink-0"
+			onClick={(e) => e.stopPropagation()}
+			onKeyDown={(e) => e.stopPropagation()}
 		>
-			<FileTreeIcon>
-				<Library className="size-4 text-muted-foreground" />
-			</FileTreeIcon>
-			<FileTreeName className="min-w-0 flex-1 truncate">
-				{t("papersLibrary.title")}
-			</FileTreeName>
-			{showDownload ? (
-				<FileTreeActions
-					className="shrink-0"
-					onClick={(e) => e.stopPropagation()}
-					onKeyDown={(e) => e.stopPropagation()}
+			{/*
+			 * Single pill-shaped control: left = "编译" (kicks off compile),
+			 * right = chevron (opens engine picker). Whole thing shares one
+			 * muted background so the row reads as one UI affordance.
+			 */}
+			<Popover open={pickerOpen} onOpenChange={setPickerOpen}>
+				<div
+					className={cn(
+						"inline-flex h-6 items-stretch overflow-hidden rounded-md border bg-muted text-xs",
+						"hover:bg-muted/80",
+					)}
 				>
-					<Tooltip disableHoverableContent>
-						<TooltipTrigger asChild>
-							<Button
+					<button
+						type="button"
+						disabled={!hasEngines}
+						className={cn(
+							"flex items-center px-2 font-normal",
+							hasEngines
+								? "text-foreground hover:bg-background/60"
+								: "cursor-not-allowed text-muted-foreground",
+						)}
+						aria-label={t("fileTree.compileTex")}
+						onClick={runCompile}
+					>
+						{t("fileTree.compileTex")}
+					</button>
+					<PopoverTrigger asChild>
+						<button
+							type="button"
+							className={cn(
+								"flex w-5 items-center justify-center border-l border-border/60",
+								"hover:bg-background/60",
+							)}
+							aria-label={t("fileTree.latexEngine")}
+							onClick={(e) => e.stopPropagation()}
+						>
+							<ChevronDown className="size-3" />
+						</button>
+					</PopoverTrigger>
+				</div>
+				<PopoverContent
+					align="end"
+					sideOffset={4}
+					className="w-44 p-1"
+					onClick={(e) => e.stopPropagation()}
+				>
+					{actions.enginesLoading ? (
+						<div className="px-2 py-1.5 text-muted-foreground text-xs">
+							{t("fileTree.detectingEngines")}
+						</div>
+					) : hasEngines ? (
+						<div className="flex flex-col">
+							<div role="listbox" className="flex flex-col">
+								{actions.engines.map((engine) => {
+									const isSelected = actions.selectedEngine === engine.id;
+									return (
+										<button
+											key={engine.id}
+											type="button"
+											role="option"
+											aria-selected={isSelected}
+											className={cn(
+												"flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-xs",
+												"focus:outline-none",
+												isSelected
+													? "bg-accent font-medium text-accent-foreground"
+													: "hover:bg-accent hover:text-accent-foreground focus-visible:bg-accent focus-visible:text-accent-foreground",
+											)}
+											onClick={(e) => {
+												e.stopPropagation();
+												actions.selectEngine(engine.id);
+												setPickerOpen(false);
+											}}
+										>
+											<Check
+												className={cn(
+													"size-3 shrink-0",
+													isSelected ? "opacity-100" : "opacity-0",
+												)}
+												aria-hidden
+											/>
+											<span className="flex-1 truncate">{engine.label}</span>
+										</button>
+									);
+								})}
+							</div>
+							{/* Clear intermediates: unstick latexmk after a failed run
+							 * (fingerprint db records the error, unchanged source
+							 * then never recompiles). Kept next to the engines it
+							 * applies to; hidden without latexmk (nothing to run). */}
+							<div className="mx-1 my-1 h-px bg-border" />
+							<button
 								type="button"
-								variant="ghost"
-								size="icon-xs"
-								className="size-5"
-								aria-label={t("fileTree.downloadAllMissing")}
-								disabled={busy}
+								className={cn(
+									"flex w-full items-center gap-1.5 rounded-sm px-2 py-1.5 text-left text-xs",
+									"hover:bg-accent hover:text-accent-foreground",
+									"focus:outline-none focus-visible:bg-accent focus-visible:text-accent-foreground",
+								)}
 								onClick={(e) => {
 									e.stopPropagation();
-									onDownloadAll();
+									setPickerOpen(false);
+									actions.cleanAux(texPath);
 								}}
 							>
-								{downloadingAll ? (
-									<Loader2 className="size-3.5 animate-spin" />
-								) : (
-									<Download className="size-3.5" />
-								)}
-							</Button>
-						</TooltipTrigger>
-						<TooltipContent
-							side="right"
-							className="max-w-xs select-none cursor-default"
-						>
-							{t("fileTree.downloadAllMissing")}
-						</TooltipContent>
-					</Tooltip>
-				</FileTreeActions>
-			) : null}
-		</FileTreeFile>
+								<Eraser className="size-3 shrink-0" aria-hidden />
+								<span className="flex-1 truncate">
+									{t("fileTree.cleanAux")}
+								</span>
+							</button>
+						</div>
+					) : (
+						<div className="px-2 py-1.5 text-muted-foreground text-xs">
+							{t("fileTree.noLatexEngine")}
+						</div>
+					)}
+				</PopoverContent>
+			</Popover>
+		</FileTreeActions>
 	);
 }
 
